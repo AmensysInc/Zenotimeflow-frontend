@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDepartments } from "@/hooks/useSchedulerDatabase";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -107,11 +107,9 @@ export default function CreateShiftModal({
         department_id: formData.department_id || null
       };
 
-      const { error } = await supabase
-        .from('schedule_templates')
-        .insert([{
-          name: formData.schedule_name.trim(),
-          description: formData.description.trim() || null,
+      await apiClient.post('/scheduler/schedule-templates/', {
+        name: formData.schedule_name.trim(),
+        description: formData.description.trim() || null,
           template_data: templateData,
           company_id: companyId,
           created_by: user.id

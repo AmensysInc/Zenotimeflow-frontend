@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { parseISO, differenceInMinutes, isToday } from "date-fns";
 import { usePersistentTimeClock } from "@/hooks/usePersistentTimeClock";
 
@@ -139,11 +139,8 @@ export const useCalendarShiftNotification = () => {
 
     try {
       // Get employee record for current user
-      const { data: employee } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const employee = employees?.[0];
 
       if (!employee) {
         console.log('No employee record found for user');
@@ -154,18 +151,11 @@ export const useCalendarShiftNotification = () => {
       const today = now.toISOString().split('T')[0];
 
       // Get today's shifts for this employee
-      const { data: shifts, error } = await supabase
-        .from('shifts')
-        .select('id, start_time, end_time, status')
-        .eq('employee_id', employee.id)
-        .gte('start_time', `${today}T00:00:00`)
-        .lte('start_time', `${today}T23:59:59`)
-        .order('start_time', { ascending: true });
-
-      if (error) {
-        console.error('Error fetching shifts:', error);
-        return;
-      }
+      const shifts = await apiClient.get<Shift[]>('/scheduler/shifts/', {
+        employee: employee.id,
+        start_date: `${today}T00:00:00`,
+        end_date: `${today}T23:59:59`
+      });
 
       if (!shifts || shifts.length === 0) {
         console.log('No shifts found for today');

@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useEmployees, useDepartments, Employee } from "@/hooks/useSchedulerDatabase";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { toast } from "sonner";
 import { UserPlus } from "lucide-react";
 
@@ -86,11 +86,10 @@ export default function AddEmployeeModal({
 
     try {
       // Check if email already exists in employees
-      const { data: existingEmployee } = await supabase
-        .from('employees')
-        .select('email')
-        .eq('email', formData.email)
-        .single();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+        email: formData.email
+      });
+      const existingEmployee = employees && employees.length > 0 ? employees[0] : null;
 
       if (existingEmployee) {
         toast.error("An employee with this email already exists");
@@ -98,20 +97,19 @@ export default function AddEmployeeModal({
         return;
       }
 
-      // First create the user account via edge function
-      const { data: userData, error: userError } = await supabase.functions.invoke('create-user', {
-        body: {
+      // First create the user account
+      let userData;
+      try {
+        userData = await apiClient.post('/auth/register/', {
           email: formData.email.trim(),
           full_name: `${formData.first_name.trim()} ${formData.last_name.trim()}`,
-          role: 'employee',
           password: formData.password,
+          role: 'employee',
           app_type: 'scheduler'
-        }
-      });
-
-      if (userError) {
+        });
+      } catch (userError: any) {
         console.error('Error creating user:', userError);
-        toast.error("Failed to create user account");
+        toast.error("Failed to create user account: " + (userError.message || 'Unknown error'));
         setLoading(false);
         return;
       }
@@ -131,7 +129,7 @@ export default function AddEmployeeModal({
         emergency_contact_name: formData.emergency_contact_name.trim() || undefined,
         emergency_contact_phone: formData.emergency_contact_phone.trim() || undefined,
         notes: formData.notes.trim() || undefined,
-        user_id: userData?.user?.id || null
+        user_id: userData?.id || userData?.user?.id || null
       };
 
       await createEmployee(employeeData);

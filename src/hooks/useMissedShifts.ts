@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -78,12 +78,13 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
   useEffect(() => {
     const getMyEmployee = async () => {
       if (!user) return;
-      const { data } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      setMyEmployeeId(data?.id || null);
+      try {
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+        setMyEmployeeId(employees?.[0]?.id || null);
+      } catch (error) {
+        console.error('Error fetching employee:', error);
+        setMyEmployeeId(null);
+      }
     };
     getMyEmployee();
   }, [user]);
@@ -97,68 +98,59 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
       // Determine which company to filter by
       const filterCompanyId = companyId && companyId !== 'all' ? companyId : employeeCompanyId;
       
-      let query = supabase
-        .from('shifts')
-        .select(`
-          *,
-          employee:employees!shifts_employee_id_fkey(id, first_name, last_name, email),
-          company:companies(id, name, organization_id)
-        `)
-        .eq('is_missed', true)
-        .order('missed_at', { ascending: false });
-      
-      // Filter by company - required for employees to only see their company's shifts
+      const params: any = { is_missed: true };
       if (filterCompanyId) {
-        query = query.eq('company_id', filterCompanyId);
+        params.company = filterCompanyId;
       }
       
-      const { data, error } = await query;
-      
-      if (error) throw error;
+      const data = await apiClient.get<any[]>('/scheduler/shifts/', params);
       
       // Fetch replacement employee info for shifts that have one
       // Also check if replacement has clocked in via time_clock
       // Also filter out shifts where the current employee is the one who missed (can't replace yourself)
       const shiftsWithReplacements = await Promise.all(
         (data || [])
-          .filter((shift: any) => shift.employee_id !== myEmployeeId) // Exclude own missed shifts
+          .filter((shift: any) => (shift.employee || shift.employee_id) !== myEmployeeId) // Exclude own missed shifts
           .map(async (shift: any) => {
             let enrichedShift = { ...shift };
             
-            if (shift.replacement_employee_id) {
+            const replacementEmployeeId = shift.replacement_employee || shift.replacement_employee_id;
+            if (replacementEmployeeId) {
               // Fetch replacement employee details
-              const { data: replEmployee } = await supabase
-                .from('employees')
-                .select('id, first_name, last_name, email')
-                .eq('id', shift.replacement_employee_id)
-                .single();
-              enrichedShift.replacement_employee = replEmployee;
+              try {
+                const replEmployee = await apiClient.get<any>(`/scheduler/employees/${replacementEmployeeId}/`);
+                enrichedShift.replacement_employee = replEmployee;
+              } catch (error) {
+                console.error('Error fetching replacement employee:', error);
+              }
               
               // Check if replacement has clocked in (even if replacement_started_at wasn't set)
-              const { data: clockEntry } = await supabase
-                .from('time_clock')
-                .select('id, clock_in, clock_out, break_start, break_end')
-                .eq('shift_id', shift.id)
-                .eq('employee_id', shift.replacement_employee_id)
-                .not('clock_in', 'is', null)
-                .maybeSingle();
+              try {
+                const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+                  shift: shift.id,
+                  employee: replacementEmployeeId
+                });
+                const clockEntry = clockEntries.find(e => e.clock_in);
 
-              if (clockEntry) {
-                enrichedShift.replacement_clock_in = clockEntry.clock_in || undefined;
-                enrichedShift.replacement_clock_out = clockEntry.clock_out || undefined;
-                enrichedShift.replacement_break_start = clockEntry.break_start || undefined;
-                enrichedShift.replacement_break_end = clockEntry.break_end || undefined;
-              }
-              
-              // If there's a clock entry, treat the shift as started
-              if (clockEntry?.clock_in && !shift.replacement_started_at) {
-                enrichedShift.replacement_started_at = clockEntry.clock_in;
-                enrichedShift.status = 'in_progress';
-              }
+                if (clockEntry) {
+                  enrichedShift.replacement_clock_in = clockEntry.clock_in || undefined;
+                  enrichedShift.replacement_clock_out = clockEntry.clock_out || undefined;
+                  enrichedShift.replacement_break_start = clockEntry.break_start || undefined;
+                  enrichedShift.replacement_break_end = clockEntry.break_end || undefined;
+                }
+                
+                // If there's a clock entry, treat the shift as started
+                if (clockEntry?.clock_in && !shift.replacement_started_at) {
+                  enrichedShift.replacement_started_at = clockEntry.clock_in;
+                  enrichedShift.status = 'in_progress';
+                }
 
-              // If replacement clocked out, reflect completion in UI
-              if (clockEntry?.clock_out) {
-                enrichedShift.status = 'completed';
+                // If replacement clocked out, reflect completion in UI
+                if (clockEntry?.clock_out) {
+                  enrichedShift.status = 'completed';
+                }
+              } catch (error) {
+                console.error('Error fetching clock entry:', error);
               }
             }
             return enrichedShift;
@@ -178,22 +170,12 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     if (!user) return;
     
     try {
-      let query = supabase
-        .from('shift_replacement_requests')
-        .select(`
-          *,
-          original_employee:employees!shift_replacement_requests_original_employee_id_fkey(id, first_name, last_name),
-          replacement_employee:employees!shift_replacement_requests_replacement_employee_id_fkey(id, first_name, last_name)
-        `)
-        .order('requested_at', { ascending: false });
-      
+      const params: any = {};
       if (companyId && companyId !== 'all') {
-        query = query.eq('company_id', companyId);
+        params.company = companyId;
       }
       
-      const { data, error } = await query;
-      
-      if (error) throw error;
+      const data = await apiClient.get<ReplacementRequest[]>('/scheduler/replacement-requests/', params);
       setReplacementRequests(data || []);
     } catch (error) {
       console.error('Error fetching replacement requests:', error);
@@ -212,14 +194,11 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
       
       // Find scheduled shifts that have passed the grace period without clock-in
       // Include created_at to filter out retroactively created shifts
-      const { data: overdueShifts, error: fetchError } = await supabase
-        .from('shifts')
-        .select('id, employee_id, company_id, start_time, created_at')
-        .eq('status', 'scheduled')
-        .eq('is_missed', false)
-        .lt('start_time', graceThreshold.toISOString());
-      
-      if (fetchError) throw fetchError;
+      const overdueShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        status: 'scheduled',
+        is_missed: false,
+        start_date: graceThreshold.toISOString()
+      });
       
       if (!overdueShifts || overdueShifts.length === 0) return;
       
@@ -233,23 +212,14 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
           continue; // Skip retroactively created shifts
         }
         
-        const { data: clockEntry } = await supabase
-          .from('time_clock')
-          .select('id')
-          .eq('shift_id', shift.id)
-          .not('clock_in', 'is', null)
-          .maybeSingle();
+        const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+          shift: shift.id
+        });
+        const clockEntry = clockEntries.find(e => e.clock_in);
         
         // If no clock entry, mark as missed
         if (!clockEntry) {
-          await supabase
-            .from('shifts')
-            .update({ 
-              is_missed: true, 
-              missed_at: now.toISOString(),
-              status: 'missed'
-            })
-            .eq('id', shift.id);
+          await apiClient.post(`/scheduler/shifts/${shift.id}/mark_missed/`, {});
         }
       }
       
@@ -266,11 +236,8 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     
     try {
       // Get current user's employee record
-      const { data: myEmployee } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const myEmployee = employees?.[0];
       
       if (!myEmployee) {
         toast.error('You must be an employee to request a shift replacement');
@@ -278,29 +245,23 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
       }
       
       // Check if already requested
-      const { data: existing } = await supabase
-        .from('shift_replacement_requests')
-        .select('id')
-        .eq('shift_id', shiftId)
-        .eq('replacement_employee_id', myEmployee.id)
-        .maybeSingle();
+      const requests = await apiClient.get<any[]>('/scheduler/replacement-requests/', {
+        shift: shiftId,
+        replacement_employee: myEmployee.id
+      });
       
-      if (existing) {
+      if (requests && requests.length > 0) {
         toast.error('You have already requested this shift');
         return;
       }
       
-      const { error } = await supabase
-        .from('shift_replacement_requests')
-        .insert({
-          shift_id: shiftId,
-          original_employee_id: originalEmployeeId,
-          replacement_employee_id: myEmployee.id,
-          company_id: companyIdForRequest,
-          status: 'pending'
-        });
-      
-      if (error) throw error;
+      await apiClient.post('/scheduler/replacement-requests/', {
+        shift: shiftId,
+        original_employee: originalEmployeeId,
+        replacement_employee: myEmployee.id,
+        company: companyIdForRequest,
+        status: 'pending'
+      });
       
       toast.success('Replacement request submitted');
       await fetchReplacementRequests();
@@ -315,50 +276,8 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     if (!user) return;
     
     try {
-      // Get the request details
-      const { data: request, error: fetchError } = await supabase
-        .from('shift_replacement_requests')
-        .select('*')
-        .eq('id', requestId)
-        .single();
-      
-      if (fetchError || !request) throw fetchError || new Error('Request not found');
-      
-      // Update the request status
-      const { error: updateRequestError } = await supabase
-        .from('shift_replacement_requests')
-        .update({
-          status: 'approved',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: user.id
-        })
-        .eq('id', requestId);
-      
-      if (updateRequestError) throw updateRequestError;
-      
-      // Update the shift with replacement employee
-      const { error: updateShiftError } = await supabase
-        .from('shifts')
-        .update({
-          replacement_employee_id: request.replacement_employee_id,
-          replacement_approved_at: new Date().toISOString()
-        })
-        .eq('id', request.shift_id);
-      
-      if (updateShiftError) throw updateShiftError;
-      
-      // Reject all other pending requests for this shift
-      await supabase
-        .from('shift_replacement_requests')
-        .update({
-          status: 'rejected',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: user.id,
-          reviewer_notes: 'Another replacement was approved'
-        })
-        .eq('shift_id', request.shift_id)
-        .neq('id', requestId)
-        .eq('status', 'pending');
+      // Approve the request (this will also update the shift)
+      await apiClient.post(`/scheduler/replacement-requests/${requestId}/approve/`, {});
       
       toast.success('Replacement approved');
       await fetchReplacementRequests();
@@ -374,17 +293,9 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     if (!user) return;
     
     try {
-      const { error } = await supabase
-        .from('shift_replacement_requests')
-        .update({
-          status: 'rejected',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: user.id,
-          reviewer_notes: notes
-        })
-        .eq('id', requestId);
-      
-      if (error) throw error;
+      await apiClient.post(`/scheduler/replacement-requests/${requestId}/reject/`, {
+        notes: notes
+      });
       
       toast.success('Replacement rejected');
       await fetchReplacementRequests();
@@ -401,11 +312,8 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     
     try {
       // Get employee record
-      const { data: myEmployee } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const myEmployee = employees?.[0];
       
       if (!myEmployee) {
         toast.error('Employee record not found');
@@ -413,42 +321,19 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
       }
       
       // Verify this employee is the approved replacement
-      const { data: shift } = await supabase
-        .from('shifts')
-        .select('*')
-        .eq('id', shiftId)
-        .eq('replacement_employee_id', myEmployee.id)
-        .single();
+      const shift = await apiClient.get<any>(`/scheduler/shifts/${shiftId}/`);
       
-      if (!shift) {
+      const replacementEmployeeId = shift.replacement_employee || shift.replacement_employee_id;
+      if (replacementEmployeeId !== myEmployee.id) {
         toast.error('You are not approved to work this shift');
         return false;
       }
       
-      // Update shift with started timestamp AND change status to 'in_progress'
-      // This ensures managers and super users see the update immediately
-      const now = new Date();
-      const { error: updateShiftError } = await supabase
-        .from('shifts')
-        .update({
-          replacement_started_at: now.toISOString(),
-          status: 'in_progress' // Update status so it reflects across all views
-        })
-        .eq('id', shiftId);
-      
-      if (updateShiftError) throw updateShiftError;
-      
-      // Create time clock entry for the replacement employee
-      const { error: clockError } = await supabase
-        .from('time_clock')
-        .insert({
-          employee_id: myEmployee.id,
-          shift_id: shiftId,
-          clock_in: now.toISOString(),
-          notes: `Replacement shift - original employee: ${shift.employee_id}`
-        });
-      
-      if (clockError) throw clockError;
+      // Create time clock entry for the replacement employee (this will also update the shift)
+      await apiClient.post('/scheduler/time-clock/clock_in/', {
+        employee_id: myEmployee.id,
+        shift_id: shiftId
+      });
       
       toast.success('Shift started successfully');
       await fetchMissedShifts();
@@ -466,35 +351,6 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     fetchMissedShifts();
     fetchReplacementRequests();
 
-    // Realtime refresh: ensures Missed Shifts updates immediately after clock-out / approvals
-    let refreshTimeout: any;
-    const scheduleRefresh = () => {
-      if (refreshTimeout) clearTimeout(refreshTimeout);
-      refreshTimeout = setTimeout(() => {
-        fetchMissedShifts();
-        fetchReplacementRequests();
-      }, 400);
-    };
-
-    const channel = supabase
-      .channel(`missed_shifts_rt_${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'time_clock' },
-        scheduleRefresh
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'shifts' },
-        scheduleRefresh
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'shift_replacement_requests' },
-        scheduleRefresh
-      )
-      .subscribe();
-
     // Check for missed shifts every minute
     const intervalId = setInterval(checkAndMarkMissedShifts, 60000);
 
@@ -503,8 +359,6 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
 
     return () => {
       clearInterval(intervalId);
-      if (refreshTimeout) clearTimeout(refreshTimeout);
-      channel.unsubscribe();
     };
   }, [user, companyId, employeeCompanyId, myEmployeeId]);
 

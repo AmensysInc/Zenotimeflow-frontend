@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
 
@@ -62,31 +62,21 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
   const fetchAvailableUsers = async () => {
     try {
       // Get users with operations_manager role for organization manager assignment
-      const { data: managerRoles, error: rolesError } = await supabase
-        .from('user_roles')
-        .select('user_id')
-        .eq('role', 'operations_manager');
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const opsManagerUsers = allUsers.filter((u: any) => {
+        const roles = u.roles || [];
+        return roles.some((r: any) => r.role === 'operations_manager') &&
+               u.profile?.status !== 'deleted' &&
+               (u.profile?.status === 'active' || !u.profile?.status);
+      });
 
-      if (rolesError) throw rolesError;
+      const profiles = opsManagerUsers.map((u: any) => ({
+        user_id: u.id,
+        full_name: u.profile?.full_name || u.email || '',
+        email: u.email || ''
+      })).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-      const managerUserIds = managerRoles?.map(r => r.user_id) || [];
-
-      if (managerUserIds.length === 0) {
-        setAvailableUsers([]);
-        return;
-      }
-
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, email')
-        .in('user_id', managerUserIds)
-        .neq('status', 'deleted')
-        .eq('status', 'active')
-        .order('full_name');
-
-      if (profilesError) throw profilesError;
-
-      setAvailableUsers(profiles || []);
+      setAvailableUsers(profiles);
     } catch (error) {
       console.error('Error fetching users:', error);
     }
@@ -98,19 +88,14 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
 
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('organizations')
-        .update({
-          name: formData.name,
-          color: formData.color,
-          address: formData.address || null,
-          phone: formData.phone || null,
-          email: formData.email || null,
-          organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
-        })
-        .eq('id', organization.id);
-
-      if (error) throw error;
+      await apiClient.patch(`/scheduler/organizations/${organization.id}/`, {
+        name: formData.name,
+        color: formData.color,
+        address: formData.address || null,
+        phone: formData.phone || null,
+        email: formData.email || null,
+        organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
+      });
 
       onSuccess?.();
       onOpenChange(false);
@@ -128,12 +113,7 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
     
     setDeleting(true);
     try {
-      const { error } = await supabase
-        .from('organizations')
-        .delete()
-        .eq('id', organization.id);
-
-      if (error) throw error;
+      await apiClient.delete(`/scheduler/organizations/${organization.id}/`);
 
       onSuccess?.();
       onOpenChange(false);

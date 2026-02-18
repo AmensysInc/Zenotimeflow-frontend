@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { toast } from 'sonner';
 import { format, isToday } from 'date-fns';
 
@@ -114,21 +114,11 @@ const Habits = () => {
     if (!user) return;
 
     try {
-      const { data: roles, error } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .limit(1)
-        .single();
-
-      if (error) {
-        console.error('Error checking user role:', error);
-        setUserRole('user');
-        return;
-      }
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const role = roles.length > 0 ? roles[0].role : 'user';
       
-      console.log('User role set to:', roles?.role || 'user', 'for user:', user?.email);
-      const role = roles?.role || 'user';
+      console.log('User role set to:', role, 'for user:', user?.email);
       setUserRole(role);
       
       // Load users if manager
@@ -145,23 +135,18 @@ const Habits = () => {
     if (!user) return;
 
     try {
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, email')
-        .neq('user_id', user.id) // Exclude current user from the list
-        .neq('status', 'deleted') // Exclude deleted users
-        .eq('status', 'active') // Only show active users
-        .order('full_name');
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const profiles = allUsers
+        .filter((u: any) => u.id !== user.id && u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
+        .map((u: any) => ({ 
+          id: u.id, 
+          full_name: u.profile?.full_name || u.email || 'Unknown', 
+          email: u.email || '' 
+        }))
+        .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-      if (profilesError) {
-        console.error('Error loading profiles:', profilesError);
-      } else if (profiles) {
-        setUsers(profiles.map(p => ({ 
-          id: p.user_id, 
-          full_name: p.full_name || p.email || 'Unknown', 
-          email: p.email || '' 
-        })));
-        console.log('Loaded users:', profiles.length);
+      setUsers(profiles);
+      console.log('Loaded users:', profiles.length);
       }
     } catch (error) {
       console.error('Error in loadUsers:', error);
@@ -173,21 +158,11 @@ const Habits = () => {
 
     const targetUserId = selectedUserId || user.id;
     
-    const { data, error } = await supabase
-      .from('habits')
-      .select('*')
-      .eq('user_id', targetUserId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error loading habits:', error);
-      toast.error('Failed to load habits');
-    } else {
-      setHabits((data || []).map(habit => ({
-        ...habit,
-        frequency: habit.frequency as 'daily' | 'weekly'
-      })));
-    }
+    const habits = await apiClient.get<any[]>('/habits/habits/', { user: targetUserId });
+    setHabits(habits.map((habit: any) => ({
+      ...habit,
+      frequency: habit.frequency as 'daily' | 'weekly'
+    })));
     setIsLoading(false);
   };
 
@@ -196,17 +171,8 @@ const Habits = () => {
 
     const targetUserId = selectedUserId || user.id;
     
-    const { data, error } = await supabase
-      .from('habit_completions')
-      .select('*')
-      .eq('user_id', targetUserId);
-
-    if (error) {
-      console.error('Error loading completions:', error);
-      toast.error('Failed to load habit completions');
-    } else {
-      setCompletions(data || []);
-    }
+    const completions = await apiClient.get<any[]>('/habits/completions/', { user: targetUserId });
+    setCompletions(completions);
   };
 
   const createHabit = async () => {
@@ -215,9 +181,8 @@ const Habits = () => {
       return;
     }
 
-    const { error } = await supabase
-      .from('habits')
-      .insert([{
+    try {
+      await apiClient.post('/habits/habits/', {
         title: newHabit.title,
         description: newHabit.description,
         category: newHabit.category,
@@ -227,13 +192,8 @@ const Habits = () => {
         notes: newHabit.notes,
         start_date: newHabit.start_date,
         end_date: newHabit.end_date || null,
-        user_id: user?.id
-      }]);
-
-    if (error) {
-      console.error('Error creating habit:', error);
-      toast.error('Failed to create habit');
-    } else {
+        user: user?.id
+      });
       setNewHabit({
         title: '',
         description: '',
@@ -272,9 +232,8 @@ const Habits = () => {
       return;
     }
 
-    const { error } = await supabase
-      .from('habits')
-      .update({
+    try {
+      await apiClient.patch(`/habits/habits/${editingHabit.id}/`, {
         title: editHabitForm.title,
         description: editHabitForm.description,
         category: editHabitForm.category,
@@ -283,46 +242,39 @@ const Habits = () => {
         color: editHabitForm.color,
         start_date: editHabitForm.start_date || null,
         end_date: editHabitForm.end_date || null
-      })
-      .eq('id', editingHabit.id);
-
-    if (error) {
-      console.error('Error updating habit:', error);
-      toast.error('Failed to update habit');
-    } else {
+      });
       setIsEditingHabit(false);
       setEditingHabit(null);
       toast.success('Habit updated successfully');
       loadHabits();
+    } catch (error: any) {
+      console.error('Error updating habit:', error);
+      toast.error('Failed to update habit');
     }
   };
 
   const deleteHabit = async (habitId: string) => {
     // First delete all completions for this habit
-    const { error: completionsError } = await supabase
-      .from('habit_completions')
-      .delete()
-      .eq('habit_id', habitId);
-
-    if (completionsError) {
+    try {
+      const completions = await apiClient.get<any[]>('/habits/completions/', { habit: habitId });
+      await Promise.all(completions.map((c: any) => 
+        apiClient.delete(`/habits/completions/${c.id}/`)
+      ));
+    } catch (completionsError: any) {
       console.error('Error deleting habit completions:', completionsError);
       toast.error('Failed to delete habit completions');
       return;
     }
 
     // Then delete the habit itself
-    const { error } = await supabase
-      .from('habits')
-      .delete()
-      .eq('id', habitId);
-
-    if (error) {
-      console.error('Error deleting habit:', error);
-      toast.error('Failed to delete habit');
-    } else {
+    try {
+      await apiClient.delete(`/habits/habits/${habitId}/`);
       toast.success('Habit deleted successfully');
       loadHabits();
       loadCompletions();
+    } catch (error: any) {
+      console.error('Error deleting habit:', error);
+      toast.error('Failed to delete habit');
     }
   };
 
@@ -334,27 +286,24 @@ const Habits = () => {
     const existingCompletion = completions.find(c => c.habit_id === habitId && c.date === today);
     
     if (existingCompletion) {
-      const { error } = await supabase
-        .from('habit_completions')
-        .update({ completed: !existingCompletion.completed })
-        .eq('id', existingCompletion.id);
-
-      if (error) {
+      try {
+        await apiClient.patch(`/habits/completions/${existingCompletion.id}/`, { 
+          completed: !existingCompletion.completed 
+        });
+      } catch (error: any) {
         console.error('Error updating completion:', error);
         toast.error('Failed to update habit completion');
         return;
       }
     } else {
-      const { error } = await supabase
-        .from('habit_completions')
-        .insert([{
-          habit_id: habitId,
-          user_id: targetUserId,
+      try {
+        await apiClient.post('/habits/completions/', {
+          habit: habitId,
+          user: targetUserId,
           date: today,
           completed: true
-        }]);
-
-      if (error) {
+        });
+      } catch (error: any) {
         console.error('Error creating completion:', error);
         toast.error('Failed to mark habit as complete');
         return;
@@ -367,15 +316,12 @@ const Habits = () => {
       const wasCompleted = existingCompletion?.completed || false;
       const isNowCompleted = !wasCompleted;
       
-      const { error } = await supabase
-        .from('habits')
-        .update({
+      try {
+        await apiClient.patch(`/habits/habits/${habitId}/`, {
           current_streak: isNowCompleted ? habit.current_streak + 1 : Math.max(0, habit.current_streak - 1),
           best_streak: isNowCompleted && habit.current_streak + 1 > habit.best_streak ? habit.current_streak + 1 : habit.best_streak
-        })
-        .eq('id', habitId);
-
-      if (error) {
+        });
+      } catch (error: any) {
         console.error('Error updating habit streak:', error);
       }
     }
@@ -414,27 +360,24 @@ const Habits = () => {
     const existingCompletion = completions.find(c => c.habit_id === habitId && c.date === dateStr);
     
     if (existingCompletion) {
-      const { error } = await supabase
-        .from('habit_completions')
-        .update({ completed: !existingCompletion.completed })
-        .eq('id', existingCompletion.id);
-
-      if (error) {
+      try {
+        await apiClient.patch(`/habits/completions/${existingCompletion.id}/`, { 
+          completed: !existingCompletion.completed 
+        });
+      } catch (error: any) {
         console.error('Error updating completion:', error);
         toast.error('Failed to update habit completion');
         return;
       }
     } else {
-      const { error } = await supabase
-        .from('habit_completions')
-        .insert([{
-          habit_id: habitId,
-          user_id: targetUserId,
+      try {
+        await apiClient.post('/habits/completions/', {
+          habit: habitId,
+          user: targetUserId,
           date: dateStr,
           completed: true
-        }]);
-
-      if (error) {
+        });
+      } catch (error: any) {
         console.error('Error creating completion:', error);
         toast.error('Failed to mark habit as complete');
         return;
@@ -454,20 +397,16 @@ const Habits = () => {
   const saveHabitNotes = async () => {
     if (!currentHabitForNotes) return;
 
-    const { error } = await supabase
-      .from('habits')
-      .update({ notes: habitNotes })
-      .eq('id', currentHabitForNotes.id);
-
-    if (error) {
-      console.error('Error updating habit notes:', error);
-      toast.error('Failed to save notes');
-    } else {
+    try {
+      await apiClient.patch(`/habits/habits/${currentHabitForNotes.id}/`, { notes: habitNotes });
       toast.success('Notes saved successfully');
       setIsNotesDialogOpen(false);
       setCurrentHabitForNotes(null);
       setHabitNotes('');
       loadHabits();
+    } catch (error: any) {
+      console.error('Error updating habit notes:', error);
+      toast.error('Failed to save notes');
     }
   };
 

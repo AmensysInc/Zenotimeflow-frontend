@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -83,34 +83,27 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
         console.log('Fetching available admins for user:', user.id);
         try {
           // Use the secure database function to get available admins
-          const { data: admins, error } = await supabase.rpc('get_available_admins_for_user', {
-            _user_id: user.id
-          });
+          // Get available admins from Django backend
+          const admins = await apiClient.get<any[]>('/auth/users/', { role: 'admin,super_admin,operations_manager,manager' });
+          
+          // Convert to expected format
+          const formattedAdmins = admins?.map((admin: any) => ({
+            user_id: admin.id,
+            full_name: admin.profile?.full_name || admin.full_name || null,
+            email: admin.email,
+            role: admin.roles?.[0]?.role || 'admin'
+          })) || [];
 
-          if (error) {
-            console.error('Error fetching available admins:', error);
-          } else {
-            console.log('Available admins from function:', admins);
-            
-            // Convert to expected format
-            const formattedAdmins = admins?.map(admin => ({
-              user_id: admin.user_id,
-              full_name: admin.full_name,
-              email: admin.email,
-              role: admin.role
-            })) || [];
-
-            console.log('Final admins list:', formattedAdmins);
-            setAvailableAdmins(formattedAdmins);
-            
-            // Auto-select the first available admin if none selected
-            if (formattedAdmins.length > 0 && !selectedAdmin) {
-              console.log('Auto-selecting first admin:', formattedAdmins[0]);
-              setSelectedAdmin(formattedAdmins[0].user_id);
-            }
+          console.log('Final admins list:', formattedAdmins);
+          setAvailableAdmins(formattedAdmins);
+          
+          // Auto-select the first available admin if none selected
+          if (formattedAdmins.length > 0 && !selectedAdmin) {
+            console.log('Auto-selecting first admin:', formattedAdmins[0]);
+            setSelectedAdmin(formattedAdmins[0].user_id);
           }
         } catch (error) {
-          console.error('Error calling get_available_admins_for_user:', error);
+          console.error('Error fetching available admins:', error);
         }
       }
     };
@@ -123,12 +116,9 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
       initializeChatRoom();
     }
     
-    // Cleanup subscription when component unmounts or chat closes
+    // Real-time subscriptions removed - can be added back with WebSocket support later
     return () => {
-      if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
-        channelRef.current = null;
-      }
+      // Cleanup if needed
     };
   }, [user, taskId, isChatOpen, selectedUser, selectedAdmin]);
 
@@ -147,39 +137,29 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
         // Admin: get chat room with the selected assigned user
         const targetUserId = selectedUser;
         if (targetUserId) {
-          let { data: existingChat, error: fetchError } = await supabase
-            .from('task_chats')
-            .select('id')
-            .eq('task_id', taskId)
-            .eq('user_id', targetUserId)
-            .eq('admin_id', user.id)
-            .maybeSingle();
-
-          if (fetchError) {
-            console.error('Error fetching existing chat:', fetchError);
-          }
-
-          if (!existingChat) {
-            // Create new chat room
-            const { data: newChat, error } = await supabase
-              .from('task_chats')
-              .insert({
-                task_id: taskId,
-                user_id: targetUserId,
-                admin_id: user.id
-              })
-              .select('id')
-              .single();
-
-            if (error) {
-              console.error('Error creating chat:', error);
-              throw error;
+          // Get or create chat room
+          try {
+            const chats = await apiClient.get<any[]>('/tasks/chats/', {
+              task: taskId,
+              user: targetUserId,
+              admin: user.id
+            });
+            
+            if (chats && chats.length > 0) {
+              existingChatId = chats[0].id;
+              console.log('Found existing chat:', existingChatId);
+            } else {
+              // Create new chat room
+              const newChat = await apiClient.post<any>('/tasks/chats/', {
+                task: taskId,
+                user: targetUserId,
+                admin: user.id
+              });
+              existingChatId = newChat.id;
+              console.log('Created new chat:', existingChatId);
             }
-            existingChatId = newChat.id;
-            console.log('Created new chat:', existingChatId);
-          } else {
-            existingChatId = existingChat.id;
-            console.log('Found existing chat:', existingChatId);
+          } catch (error) {
+            console.error('Error with chat room:', error);
           }
         }
       } else {
@@ -187,24 +167,23 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
         console.log('User looking for chat with admin:', selectedAdmin, 'for task:', taskId, 'user:', user.id);
         
         if (selectedAdmin) {
-          let { data: existingChat, error: chatError } = await supabase
-            .from('task_chats')
-            .select('id')
-            .eq('task_id', taskId)
-            .eq('user_id', user.id)
-            .eq('admin_id', selectedAdmin)
-            .maybeSingle();
-
-          if (chatError) {
-            console.error('Error fetching user chat:', chatError);
-            throw chatError;
-          }
-
-          if (existingChat) {
-            existingChatId = existingChat.id;
-            console.log('Found existing chat with admin:', existingChat);
-          } else {
-            console.log('No chat found with selected admin:', selectedAdmin);
+          // Get chat room with selected admin
+          try {
+            const chats = await apiClient.get<any[]>('/tasks/chats/', {
+              task: taskId,
+              user: user.id,
+              admin: selectedAdmin
+            });
+            
+            if (chats && chats.length > 0) {
+              existingChatId = chats[0].id;
+              console.log('Found existing chat with admin:', existingChatId);
+            } else {
+              console.log('No chat found with selected admin:', selectedAdmin);
+              existingChatId = null;
+            }
+          } catch (error) {
+            console.error('Error fetching user chat:', error);
             existingChatId = null;
           }
         } else {
@@ -217,7 +196,7 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
         console.log('Setting chat ID:', existingChatId);
         setChatId(existingChatId);
         await fetchMessages(existingChatId);
-        setupRealtimeSubscription(existingChatId);
+        // Real-time subscriptions removed - can be added back with WebSocket support later
       } else {
         console.log('No chat room found or created');
         setChatId(null);
@@ -232,38 +211,35 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
 
   const fetchMessages = async (chatRoomId: string) => {
     try {
-      const { data: messagesData, error } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('chat_id', chatRoomId)
-        .order('created_at', { ascending: true });
-
-      if (error) throw error;
+      const messagesData = await apiClient.get<any[]>('/tasks/chat-messages/', {
+        chat: chatRoomId
+      });
 
       // Get sender profiles for messages
       const messagesWithNames = await Promise.all(
         (messagesData || []).map(async (msg) => {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('full_name, email')
-            .eq('user_id', msg.sender_id)
-            .maybeSingle();
-
-          // Check if sender is admin
-          const { data: roleData } = await supabase
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', msg.sender_id);
-
-    const isAdminSender = roleData?.some(r => r.role === 'super_admin' || r.role === 'manager');
-          
-          return {
-            ...msg,
-            message: msg.message || '',
-            files: Array.isArray(msg.files) ? (msg.files as string[]) : [],
-            sender_name: profile?.full_name || profile?.email || (isAdminSender ? 'Admin' : 'User'),
-            is_admin: isAdminSender
-          };
+          try {
+            const sender = await apiClient.get<any>(`/auth/users/${msg.sender || msg.sender_id}/`);
+            const isAdminSender = sender?.roles?.some((r: any) => 
+              r.role === 'super_admin' || r.role === 'manager' || r.role === 'operations_manager'
+            ) || false;
+            
+            return {
+              ...msg,
+              message: msg.message || '',
+              files: Array.isArray(msg.files) ? (msg.files as string[]) : [],
+              sender_name: sender?.profile?.full_name || sender?.full_name || sender?.email || (isAdminSender ? 'Admin' : 'User'),
+              is_admin: isAdminSender
+            };
+          } catch (error) {
+            return {
+              ...msg,
+              message: msg.message || '',
+              files: Array.isArray(msg.files) ? (msg.files as string[]) : [],
+              sender_name: 'User',
+              is_admin: false
+            };
+          }
         })
       );
 
@@ -273,75 +249,23 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
     }
   };
 
+  // Real-time subscriptions removed - can be added back with WebSocket support later
   const setupRealtimeSubscription = (chatRoomId: string) => {
-    // Clean up existing subscription
-    if (channelRef.current) {
-      supabase.removeChannel(channelRef.current);
-    }
-
-    const channel = supabase
-      .channel(`chat-${chatRoomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chat_messages',
-          filter: `chat_id=eq.${chatRoomId}`
-        },
-        (payload) => {
-          console.log('New message received:', payload);
-          handleNewMessage(payload.new as any);
-        }
-      )
-      .subscribe();
-
-    channelRef.current = channel;
+    // WebSocket subscription can be implemented here later
     console.log('Real-time subscription setup for chat:', chatRoomId);
-  };
-
-  const handleNewMessage = async (newMessage: any) => {
-    // Get sender info
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('full_name, email')
-      .eq('user_id', newMessage.sender_id)
-      .maybeSingle();
-
-    // Check if sender is admin
-    const { data: roleData } = await supabase
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', newMessage.sender_id);
-
-    const isAdminSender = roleData?.some(r => r.role === 'super_admin' || r.role === 'manager');
-
-    const messageWithName: ChatMessage = {
-      ...newMessage,
-      message: newMessage.message || '',
-      files: Array.isArray(newMessage.files) ? (newMessage.files as string[]) : [],
-      sender_name: profile?.full_name || profile?.email || (isAdminSender ? 'Admin' : 'User'),
-      is_admin: isAdminSender
-    };
-
-    setMessages(prev => [...prev, messageWithName]);
   };
 
   const sendMessage = async () => {
     if (!newMessage.trim() || !user || !chatId) return;
 
     try {
-      const { error } = await supabase
-        .from('chat_messages')
-        .insert({
-          chat_id: chatId,
-          sender_id: user.id,
-          message: newMessage.trim(),
-          message_type: 'text',
-          files: []
-        });
-
-      if (error) throw error;
+      await apiClient.post('/tasks/chat-messages/', {
+        chat: chatId,
+        sender: user.id,
+        message: newMessage.trim(),
+        message_type: 'text',
+        files: []
+      });
 
       setNewMessage("");
     } catch (error) {
@@ -362,40 +286,42 @@ export const TaskChat = ({ taskId, taskTitle, assignedUsers, isAdmin }: TaskChat
       const fileUrls: string[] = [];
 
       for (const file of selectedFiles) {
-        // Create a unique file path
-        const fileExt = file.name.split('.').pop();
-        const fileName = `chat/${user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+        // Upload file to Django backend
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('task_id', taskId);
         
-        // Upload file to Supabase storage
-        const { data, error } = await supabase.storage
-          .from('task-attachments')
-          .upload(fileName, file);
+        try {
+          const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/tasks/attachments/`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiClient.getToken()}`
+            },
+            body: formData
+          });
 
-        if (error) {
+          if (!response.ok) {
+            console.error('File upload error');
+            continue;
+          }
+
+          const result = await response.json();
+          const fileUrl = result.url || result.file_url;
+          fileUrls.push(fileUrl);
+        } catch (error) {
           console.error('File upload error:', error);
           continue;
         }
-
-        // Get public URL for the file
-        const { data: { publicUrl } } = supabase.storage
-          .from('task-attachments')
-          .getPublicUrl(fileName);
-
-        fileUrls.push(publicUrl);
       }
 
       // Send file message
-      const { error: messageError } = await supabase
-        .from('chat_messages')
-        .insert({
-          chat_id: chatId,
-          sender_id: user.id,
-          message: `Shared ${selectedFiles.length} file(s)`,
-          files: fileUrls,
-          message_type: 'file'
-        });
-
-      if (messageError) throw messageError;
+      await apiClient.post('/tasks/chat-messages/', {
+        chat: chatId,
+        sender: user.id,
+        message: `Shared ${selectedFiles.length} file(s)`,
+        files: fileUrls,
+        message_type: 'file'
+      });
 
       setSelectedFiles([]);
       if (fileInputRef.current) {

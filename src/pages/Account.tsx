@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,13 +41,14 @@ const Account = () => {
 
   const fetchProfile = async () => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('full_name, email, mobile_number')
-        .eq('user_id', user?.id)
-        .single();
-
-      if (error) throw error;
+      const userData = await apiClient.getCurrentUser() as any;
+      const profileData = userData?.profile || {};
+      
+      const data = {
+        full_name: profileData.full_name || '',
+        email: userData.email || '',
+        mobile_number: profileData.mobile_number || ''
+      };
 
       setProfile({
         full_name: data.full_name || "",
@@ -71,16 +72,11 @@ const Account = () => {
     setUpdating(true);
 
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({
-          full_name: profile.full_name,
-          email: profile.email,
-          mobile_number: profile.mobile_number
-        })
-        .eq('user_id', user?.id);
-
-      if (error) throw error;
+      await apiClient.patch('/auth/profile/', {
+        full_name: profile.full_name,
+        email: profile.email,
+        mobile_number: profile.mobile_number
+      });
 
       toast({
         title: "Success",
@@ -122,11 +118,11 @@ const Account = () => {
     setChangingPassword(true);
 
     try {
-      const { error } = await supabase.auth.updateUser({
-        password: passwords.newPassword
+      // Note: Password change endpoint needs to be implemented in Django backend
+      await apiClient.post('/auth/change-password/', {
+        current_password: passwords.currentPassword,
+        new_password: passwords.newPassword
       });
-
-      if (error) throw error;
 
       setPasswords({
         currentPassword: "",

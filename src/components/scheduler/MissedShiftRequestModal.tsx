@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Clock, MapPin, UserCheck, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { format, parseISO } from "date-fns";
 import { toast } from "sonner";
 import {
@@ -47,12 +47,11 @@ export default function MissedShiftRequestModal({
       setRequesting(true);
 
       // Check if already requested
-      const { data: existing } = await supabase
-        .from('shift_replacement_requests')
-        .select('id')
-        .eq('shift_id', shift.id)
-        .eq('replacement_employee_id', employeeId)
-        .maybeSingle();
+      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+        shift: shift.id,
+        replacement_employee: employeeId
+      });
+      const existing = requests && requests.length > 0 ? requests[0] : null;
 
       if (existing) {
         toast.error('You have already requested this shift');
@@ -61,12 +60,10 @@ export default function MissedShiftRequestModal({
       }
 
       // Create replacement request
-      const { error } = await supabase
-        .from('shift_replacement_requests')
-        .insert({
-          shift_id: shift.id,
-          original_employee_id: shift.employee_id,
-          replacement_employee_id: employeeId,
+      await apiClient.post('/scheduler/shift-replacement-requests/', {
+        shift: shift.id,
+        original_employee: shift.employee_id,
+        replacement_employee: employeeId,
           company_id: shift.company_id,
           status: 'pending'
         });

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { toast } from "sonner";
 
 const ACTIVE_CLOCK_KEY = 'active_time_clock';
@@ -288,11 +288,8 @@ export const usePersistentTimeClock = () => {
 
     try {
       // Get employee record
-      const { data: employee } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .maybeSingle();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const employee = employees?.[0];
 
       if (!employee) {
         setIsLoading(false);
@@ -302,14 +299,10 @@ export const usePersistentTimeClock = () => {
       setEmployeeId(employee.id);
 
       // Check for active time clock entry in database
-      const { data: activeEntryData } = await supabase
-        .from('time_clock')
-        .select('*')
-        .eq('employee_id', employee.id)
-        .is('clock_out', null)
-        .order('clock_in', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const entries = await apiClient.get<TimeClockEntry[]>('/scheduler/time-clock/', {
+        employee: employee.id
+      });
+      const activeEntryData = entries.find(entry => entry.clock_in && !entry.clock_out);
 
       if (activeEntryData) {
         setActiveEntry(activeEntryData);
@@ -384,18 +377,7 @@ export const usePersistentTimeClock = () => {
     try {
       const breakStartTime = new Date().toISOString();
       
-      // Clear break_end when starting a new break to handle multiple break cycles
-      const { data, error } = await supabase
-        .from('time_clock')
-        .update({ 
-          break_start: breakStartTime,
-          break_end: null  // Clear previous break_end
-        })
-        .eq('id', activeEntry.id)
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await apiClient.post<TimeClockEntry>(`/scheduler/time-clock/${activeEntry.id}/start_break/`, {});
 
       setActiveEntry(data);
       
@@ -426,14 +408,7 @@ export const usePersistentTimeClock = () => {
     }
 
     try {
-      const { data, error } = await supabase
-        .from('time_clock')
-        .update({ break_end: new Date().toISOString() })
-        .eq('id', activeEntry.id)
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await apiClient.post<TimeClockEntry>(`/scheduler/time-clock/${activeEntry.id}/end_break/`, {});
 
       setActiveEntry(data);
       
@@ -469,36 +444,23 @@ export const usePersistentTimeClock = () => {
     try {
       // If a shiftId is provided, verify it belongs to this employee
       if (shiftId) {
-        const { data: shift, error: shiftError } = await supabase
-          .from('shifts')
-          .select('id, employee_id')
-          .eq('id', shiftId)
-          .single();
+        const shift = await apiClient.get<any>(`/scheduler/shifts/${shiftId}/`);
         
-        if (shiftError || !shift) {
+        if (!shift) {
           toast.error('Shift not found');
           return;
         }
         
-        if (shift.employee_id !== employeeId) {
+        if (shift.employee !== employeeId && shift.employee_id !== employeeId) {
           toast.error('You can only clock in for your own assigned shifts');
           return;
         }
       }
 
-      const clockInTime = new Date().toISOString();
-      
-      const { data, error } = await supabase
-        .from('time_clock')
-        .insert([{
-          employee_id: employeeId,
-          clock_in: clockInTime,
-          shift_id: shiftId || null
-        }])
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await apiClient.post<TimeClockEntry>('/scheduler/time-clock/clock_in/', {
+        employee_id: employeeId,
+        shift_id: shiftId || null
+      });
 
       setActiveEntry(data);
       
@@ -555,19 +517,10 @@ export const usePersistentTimeClock = () => {
         totalMinutes -= breakMinutes;
       }
       
-      const totalHours = Math.round((totalMinutes / 60) * 100) / 100;
-      const overtimeHours = totalHours > 8 ? Math.round((totalHours - 8) * 100) / 100 : 0;
-
-      const { error } = await supabase
-        .from('time_clock')
-        .update({
-          clock_out: clockOutTime.toISOString(),
-          total_hours: totalHours,
-          overtime_hours: overtimeHours
-        })
-        .eq('id', activeEntry.id);
-
-      if (error) throw error;
+      await apiClient.post('/scheduler/time-clock/clock_out/', {
+        employee_id: employeeId,
+        time_clock_id: activeEntry.id
+      });
 
       // Clear state and localStorage
       setActiveEntry(null);

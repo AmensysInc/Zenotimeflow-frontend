@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserRole } from "@/hooks/useUserRole";
 import { format, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, addDays, addWeeks, addMonths, parseISO } from "date-fns";
@@ -100,33 +100,27 @@ export default function EmployeeSchedule() {
     if (!user) return;
     try {
       if (isSuperAdmin) {
-        const { data } = await supabase.from("organizations").select("id, name").order("name");
+        const data = await apiClient.get<any[]>("/scheduler/organizations/");
         setOrganizations(data || []);
       } else if (isOrganizationManager) {
-        const { data } = await supabase
-          .from("organizations")
-          .select("id, name")
-          .eq("organization_manager_id", user.id);
+        const data = await apiClient.get<any[]>("/scheduler/organizations/", { organization_manager: user.id });
         setOrganizations(data || []);
       }
 
-      let companyQuery = supabase.from("companies").select("id, name, organization_id").order("name");
+      const params: any = {};
       if (isSuperAdmin) {
         if (selectedOrganization !== "all") {
-          companyQuery = companyQuery.eq("organization_id", selectedOrganization);
+          params.organization = selectedOrganization;
         }
       } else if (isOrganizationManager) {
-        const { data: orgs } = await supabase
-          .from("organizations")
-          .select("id")
-          .eq("organization_manager_id", user.id);
+        const orgs = await apiClient.get<any[]>("/scheduler/organizations/", { organization_manager: user.id });
         const orgIds = orgs?.map((o) => o.id) || [];
-        if (orgIds.length > 0) companyQuery = companyQuery.in("organization_id", orgIds);
+        if (orgIds.length > 0) params.organization = orgIds.join(',');
       } else if (isCompanyManager) {
-        companyQuery = companyQuery.eq("company_manager_id", user.id);
+        params.company_manager = user.id;
       }
 
-      const { data: companiesData } = await companyQuery;
+      const companiesData = await apiClient.get<any[]>("/scheduler/companies/", params);
       setCompanies(companiesData || []);
     } catch (error) {
       console.error("Error loading filters:", error);
@@ -162,31 +156,30 @@ export default function EmployeeSchedule() {
       const { start, end } = getDateRange();
 
       // Fetch employees
-      const { data: empData } = await supabase
-        .from("employees")
-        .select("id, first_name, last_name, position, status")
-        .eq("company_id", activeCompanyId)
-        .eq("status", "active")
-        .order("first_name");
-      setEmployees(empData || []);
+      const empData = await apiClient.get<any[]>('/scheduler/employees/', {
+        company: activeCompanyId,
+        status: 'active'
+      });
+      setEmployees(empData.sort((a: any, b: any) => 
+        (a.first_name || '').localeCompare(b.first_name || '')
+      ));
 
       // Fetch shifts
-      const { data: shiftsData } = await supabase
-        .from("shifts")
-        .select("id, employee_id, company_id, start_time, end_time, status, notes, break_minutes")
-        .eq("company_id", activeCompanyId)
-        .gte("start_time", start.toISOString())
-        .lte("start_time", end.toISOString())
-        .order("start_time", { ascending: true });
-      setShifts(shiftsData || []);
+      const shiftsData = await apiClient.get<any[]>('/scheduler/shifts/', {
+        company: activeCompanyId,
+        start_time__gte: start.toISOString(),
+        start_time__lte: end.toISOString()
+      });
+      setShifts(shiftsData.sort((a: any, b: any) => 
+        new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+      ));
 
       // Fetch time clock entries
-      const shiftIds = (shiftsData || []).map((s) => s.id);
+      const shiftIds = shiftsData.map((s: any) => s.id);
       if (shiftIds.length > 0) {
-        const { data: clockData } = await supabase
-          .from("time_clock")
-          .select("id, employee_id, shift_id, clock_in, clock_out, break_start, break_end, total_hours")
-          .in("shift_id", shiftIds);
+        const clockData = await apiClient.get<any[]>('/scheduler/time-clock/', {
+          shift__in: shiftIds.join(',')
+        });
         setTimeClockEntries(clockData || []);
       } else {
         setTimeClockEntries([]);

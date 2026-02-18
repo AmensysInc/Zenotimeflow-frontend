@@ -13,7 +13,7 @@ import { Plus, Calendar, Clock, Flag, CheckSquare, Trash2, Filter, User, X, Chev
 import { AdminTaskCard } from "@/components/AdminTaskCard";
 import { Progress } from "@/components/ui/progress";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 
@@ -162,27 +162,8 @@ const Tasks = () => {
   }, [events, filters]);
 
   const setupRealtimeSubscription = () => {
-    const channel = supabase
-      .channel('tasks-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'calendar_events'
-        },
-        (payload) => {
-          console.log('Real-time event received:', payload);
-          setTimeout(() => {
-            refreshData();
-          }, 500);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    // Real-time subscriptions removed - can be added back with WebSocket support later
+    return () => {};
   };
 
   const refreshData = async () => {
@@ -211,27 +192,24 @@ const Tasks = () => {
     
     console.log("Fetching user role for:", user.id);
     
-    const { data } = await supabase
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', user.id);
-    
-    console.log("User roles data:", data);
-    
-    if (data && data.length > 0) {
-      const roles = data.map(item => item.role);
-      if (roles.includes('super_admin')) {
+    try {
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const roleNames = roles.map((r: any) => r.role);
+      
+      if (roleNames.includes('super_admin')) {
         setUserRole('super_admin');
-      } else if (roles.includes('operations_manager')) {
+      } else if (roleNames.includes('operations_manager')) {
         setUserRole('operations_manager');
-      } else if (roles.includes('manager')) {
+      } else if (roleNames.includes('manager')) {
         setUserRole('manager');
-      } else if (roles.includes('employee')) {
+      } else if (roleNames.includes('employee')) {
         setUserRole('employee');
       } else {
         setUserRole('user');
       }
-    } else {
+    } catch (error) {
+      console.error('Error fetching user role:', error);
       setUserRole('user');
     }
   };
@@ -239,10 +217,7 @@ const Tasks = () => {
   const fetchEvents = async () => {
     if (!user || userRole === null) return;
     
-    let eventsQuery = supabase.from("calendar_events").select(`
-      *,
-      created_by
-    `);
+    const params: any = { event_type: 'task' };
     
     // Role-based task filtering:
     // - Super Admin: sees all tasks (for management purposes)
@@ -253,44 +228,18 @@ const Tasks = () => {
     
     if (userRole === 'super_admin') {
       // Super admins see all tasks without template_id
-      eventsQuery = eventsQuery.is('template_id', null);
-    } else if (userRole === 'operations_manager' || userRole === 'manager' || userRole === 'employee') {
-      // Managers and employees see tasks assigned TO them
-      eventsQuery = eventsQuery
-        .eq('user_id', user.id)
-        .is('template_id', null);
+      // No user filter needed
     } else {
-      // Regular users see only their own tasks
-      eventsQuery = eventsQuery.eq('user_id', user.id);
+      // All other roles see tasks assigned to them
+      params.user = user.id;
     }
     
-    const { data: eventsData, error: eventsError } = await eventsQuery
-      .order("start_time", { ascending: true });
+    const eventsData = await apiClient.get<CalendarEvent[]>('/calendar/events/', params);
 
-    if (eventsError) {
-      toast({
-        title: "Error fetching events",
-        description: eventsError.message,
-        variant: "destructive",
-      });
-      setIsLoading(false);
-      return;
-    }
+    // Get user profiles for display (if needed)
+    // Note: User info might already be included in the response
 
-    const userIds = [...new Set(eventsData?.map(event => event.user_id) || [])];
-    const { data: profilesData, error: profilesError } = await supabase
-      .from("profiles")
-      .select("user_id, full_name, email")
-      .in("user_id", userIds);
-
-    if (profilesError) {
-      console.error("Error fetching profiles:", profilesError);
-    }
-
-    const eventsWithProfiles = eventsData?.map(event => ({
-      ...event,
-      profiles: profilesData?.find(profile => profile.user_id === event.user_id) || null
-    })) || [];
+    const eventsWithProfiles = eventsData || [];
 
     const primaryTasks = eventsWithProfiles.filter(event => !event.parent_task_id);
     const subTasks = eventsWithProfiles.filter(event => event.parent_task_id);
@@ -307,96 +256,73 @@ const Tasks = () => {
   const fetchTeamMembers = async () => {
     if (userRole !== 'super_admin' && userRole !== 'operations_manager' && userRole !== 'manager') return;
     
-    if (userRole === 'super_admin') {
-      // Super admins can see all users who have valid roles (not orphaned profiles)
-      // First get all user_ids that have roles
-      const { data: userRoles, error: rolesError } = await supabase
-        .from("user_roles")
-        .select("user_id")
-        .in("role", ['operations_manager', 'manager', 'employee', 'house_keeping', 'maintenance']);
-
-      if (rolesError) {
-        console.error("Error fetching user roles:", rolesError);
-        setTeamMembers([]);
-        return;
-      }
-
-      // Get unique user_ids
-      const validUserIds = [...new Set(userRoles?.map(r => r.user_id) || [])];
+    try {
+      // Fetch all users (Django will handle role-based filtering)
+      const users = await apiClient.get<any[]>('/auth/users/');
       
-      if (validUserIds.length === 0) {
-        setTeamMembers([]);
-        return;
-      }
+      // Filter users with valid roles
+      const teamMembersData = users
+        .filter((u: any) => {
+          const roles = u.roles || [];
+          const roleNames = roles.map((r: any) => r.role);
+          return roleNames.some((role: string) => 
+            ['operations_manager', 'manager', 'employee', 'house_keeping', 'maintenance'].includes(role)
+          );
+        })
+        .map((u: any) => ({
+          user_id: u.id,
+          full_name: u.profile?.full_name || u.full_name || null,
+          email: u.email
+        }));
 
-      // Fetch profiles only for users with valid roles
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("user_id, full_name, email")
-        .in("user_id", validUserIds);
-
-      if (error) {
-        console.error("Error fetching team members:", error);
+      setTeamMembers(teamMembersData);
+    } catch (error) {
+      console.error("Error fetching team members:", error);
         setTeamMembers([]);
       } else {
         setTeamMembers(data || []);
       }
     } else if (userRole === 'operations_manager') {
       // Organization managers can assign tasks to company managers within their organization
-      const { data: companies, error: companiesError } = await supabase
-        .from("companies")
-        .select("company_manager_id")
-        .eq('operations_manager_id', user?.id);
-
-      if (companiesError) {
-        console.error("Error fetching organization companies:", companiesError);
-        setTeamMembers([]);
+      const companies = await apiClient.get<any[]>('/scheduler/companies/', { operations_manager: user?.id });
+      const managerIds = companies?.map(c => c.company_manager || c.company_manager_id).filter(Boolean) || [];
+      
+      if (managerIds.length > 0) {
+        const users = await apiClient.get<any[]>('/auth/users/');
+        const teamMembersData = users
+          .filter((u: any) => managerIds.includes(u.id))
+          .map((u: any) => ({
+            user_id: u.id,
+            full_name: u.profile?.full_name || u.full_name || null,
+            email: u.email
+          }));
+        setTeamMembers(teamMembersData);
       } else {
-        const managerIds = companies?.map(c => c.company_manager_id).filter(Boolean) || [];
-        if (managerIds.length > 0) {
-          const { data: profiles, error: profilesError } = await supabase
-            .from("profiles")
-            .select("user_id, full_name, email")
-            .in("user_id", managerIds);
-
-          if (profilesError) {
-            console.error("Error fetching manager profiles:", profilesError);
-            setTeamMembers([]);
-          } else {
-            setTeamMembers(profiles || []);
-          }
-        } else {
-          setTeamMembers([]);
-        }
+        setTeamMembers([]);
       }
     } else if (userRole === 'manager') {
       // Company managers see their company employees with active status
-      const { data: employees, error: employeesError } = await supabase
-        .from("employees")
-        .select(`
-          user_id,
-          first_name,
-          last_name,
-          email,
-          company_id,
-          status,
-          companies!inner(company_manager_id)
-        `)
-        .eq('companies.company_manager_id', user?.id)
-        .eq('status', 'active');
-
-      if (employeesError) {
-        console.error("Error fetching company employees:", employeesError);
-        setTeamMembers([]);
-      } else {
-        // Transform employee data to match TeamMember interface
-        const teamMembersData = employees?.map(emp => ({
-          user_id: emp.user_id || '',
-          full_name: `${emp.first_name} ${emp.last_name}`.trim(),
-          email: emp.email
-        })).filter(member => member.user_id) || [];
+      const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager: user?.id });
+      const companyIds = companies.map(c => c.id);
+      
+      if (companyIds.length > 0) {
+        const allEmployees: any[] = [];
+        for (const companyId of companyIds) {
+          const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId, status: 'active' });
+          allEmployees.push(...employees);
+        }
+        
+        const teamMembersData = allEmployees
+          .filter(emp => emp.user || emp.user_id)
+          .map(emp => ({
+            user_id: emp.user || emp.user_id,
+            full_name: `${emp.first_name} ${emp.last_name}`.trim(),
+            email: emp.email
+          }));
         
         setTeamMembers(teamMembersData);
+      } else {
+        setTeamMembers([]);
       }
     }
   };
@@ -517,15 +443,8 @@ const Tasks = () => {
       created_by: user?.id,
     };
 
-    const { data: insertedTask, error } = await supabase.from("calendar_events").insert([eventData]).select().single();
-
-    if (error) {
-      toast({
-        title: "Error creating event",
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
+    try {
+      const insertedTask = await apiClient.post<CalendarEvent>('/calendar/events/', eventData);
       toast({
         title: "Task created successfully!",
         description: newEvent.title,
@@ -544,6 +463,12 @@ const Tasks = () => {
       });
       setIsDialogOpen(false);
       fetchEvents();
+    } catch (error: any) {
+      toast({
+        title: "Error creating event",
+        description: error.message || "Failed to create task",
+        variant: "destructive",
+      });
     }
   };
 
@@ -551,49 +476,15 @@ const Tasks = () => {
     if (!user || userRole !== 'user') return;
     
     try {
-      const { data: assignments, error: assignmentsError } = await supabase
-        .from('template_assignments')
-        .select(`
-          template_id,
-          learning_templates!inner(
-            id,
-            name,
-            description,
-            technology
-          )
-        `)
-        .eq('user_id', user.id);
+      // Note: Template assignments and tasks may need to be implemented in Django backend
+      // For now, return empty array
+      setTemplatesWithTasks([]);
+      setTemplatesLoading(false);
+      return;
 
-      if (assignmentsError) {
-        console.error('Error fetching template assignments:', assignmentsError);
-        return;
-      }
-
-      if (!assignments || assignments.length === 0) {
-        setTemplatesWithTasks([]);
-        setTemplatesLoading(false);
-        return;
-      }
-
-      const templatesData = await Promise.all(
-        assignments.map(async (assignment) => {
-          const { data: tasks, error: tasksError } = await supabase
-            .from('template_tasks')
-            .select('*')
-            .eq('template_id', assignment.template_id)
-            .eq('user_id', user.id);
-
-          if (tasksError) {
-            console.error('Error fetching template tasks:', tasksError);
-            return null;
-          }
-
-          return {
-            template: assignment.learning_templates,
-            tasks: tasks || []
-          };
-        })
-      );
+      // TODO: Implement template assignments API in Django
+      // const assignments = await apiClient.get('/tasks/template-assignments/', { user: user.id });
+      // const templatesData = await Promise.all(...);
 
       const validTemplatesData = templatesData.filter(item => item !== null) as TemplateWithTasks[];
       setTemplatesWithTasks(validTemplatesData);
@@ -609,18 +500,14 @@ const Tasks = () => {
     try {
       const newCompleted = !currentCompleted;
       
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({ 
-          completed: newCompleted,
-          completed_at: newCompleted ? new Date().toISOString() : null 
-        })
-        .eq('id', taskId);
+      await apiClient.patch(`/calendar/events/${taskId}/`, {
+        completed: newCompleted,
+        completed_at: newCompleted ? new Date().toISOString() : null
+      });
 
-      if (error) {
-        toast({
-          title: "Error updating task",
-          description: error.message,
+      toast({
+        title: "Task updated",
+        description: `Task marked as ${newCompleted ? 'completed' : 'pending'}`,
           variant: "destructive",
         });
       } else {
@@ -660,17 +547,13 @@ const Tasks = () => {
 
   const updateTaskNotes = async (taskId: string, notes: string, files?: string[]) => {
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({ 
-          notes,
-          files: files || []
-        })
-        .eq('id', taskId);
+      await apiClient.patch(`/calendar/events/${taskId}/`, {
+        notes,
+        files: files || []
+      });
 
-      if (error) {
-        toast({
-          title: "Error updating notes",
+      toast({
+        title: "Notes updated",
           description: error.message,
           variant: "destructive",
         });
@@ -688,18 +571,12 @@ const Tasks = () => {
 
   const deleteTask = async (taskId: string) => {
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .delete()
-        .eq('id', taskId);
+      await apiClient.delete(`/calendar/events/${taskId}/`);
 
-      if (error) {
-        toast({
-          title: "Error deleting task",
-          description: error.message,
-          variant: "destructive",
-        });
-      } else {
+      toast({
+        title: "Task deleted",
+        description: "Task removed successfully",
+      });
         await fetchEvents();
         toast({
           title: "Task deleted",
@@ -734,15 +611,8 @@ const Tasks = () => {
       created_by: user?.id,
     };
 
-    const { error } = await supabase.from("calendar_events").insert([subTaskData]);
-
-    if (error) {
-      toast({
-        title: "Error creating sub-task",
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
+    try {
+      await apiClient.post('/calendar/events/', subTaskData);
       toast({
         title: "Sub-task created successfully!",
         description: newSubTask.title,
@@ -761,6 +631,12 @@ const Tasks = () => {
       setIsSubTaskDialogOpen(false);
       setParentTaskForSubTask(null);
       fetchEvents();
+    } catch (error: any) {
+      toast({
+        title: "Error creating sub-task",
+        description: error.message || "Failed to create sub-task",
+        variant: "destructive",
+      });
     }
   };
 
@@ -768,25 +644,19 @@ const Tasks = () => {
     if (!event) return;
 
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({
-          title: event.title,
-          description: event.description,
-          priority: event.priority,
-          start_time: event.start_time,
-          end_time: event.end_time,
-          all_day: event.all_day,
-        })
-        .eq('id', event.id);
+      await apiClient.patch(`/calendar/events/${event.id}/`, {
+        title: event.title,
+        description: event.description,
+        priority: event.priority,
+        start_time: event.start_time,
+        end_time: event.end_time,
+        all_day: event.all_day,
+      });
 
-      if (error) {
-        toast({
-          title: "Error updating task",
-          description: error.message,
-          variant: "destructive",
-        });
-      } else {
+      toast({
+        title: "Task updated",
+        description: "Task updated successfully",
+      });
         await fetchEvents();
         setIsEditDialogOpen(false);
         setSelectedEvent(null);

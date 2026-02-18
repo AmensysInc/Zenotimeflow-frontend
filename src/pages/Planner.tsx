@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { toast } from 'sonner';
 
 interface FocusBlock {
@@ -75,17 +75,14 @@ const Planner = () => {
 
   const loadFocusBlocks = async () => {
     try {
-      const { data, error } = await supabase
-        .from('focus_sessions')
-        .select('*')
-        .eq('user_id', user?.id)
-        .gte('start_time', `${selectedDate}T00:00:00`)
-        .lt('start_time', `${new Date(new Date(selectedDate).getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]}T00:00:00`)
-        .order('start_time', { ascending: true });
+      const nextDate = new Date(new Date(selectedDate).getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const sessions = await apiClient.get<any[]>('/focus/sessions/', { 
+        user: user?.id,
+        start_time__gte: `${selectedDate}T00:00:00`,
+        start_time__lt: `${nextDate}T00:00:00`
+      });
 
-      if (error) throw error;
-
-      const blocks = data?.map(session => ({
+      const blocks = sessions.map((session: any) => ({
         id: session.id,
         title: session.notes || 'Focus Session',
         duration: session.duration || 60,
@@ -133,22 +130,16 @@ const Planner = () => {
         ? `${selectedDate}T${newBlock.scheduled_time}:00`
         : new Date().toISOString();
 
-      const { data, error } = await supabase
-        .from('focus_sessions')
-        .insert({
-          title: newBlock.title,
-          user_id: user?.id,
-          start_time: startTime,
-          end_time: new Date(new Date(startTime).getTime() + newBlock.duration * 60 * 1000).toISOString(),
-          duration: newBlock.duration,
-          notes: newBlock.title,
-          productivity_score: 0,
-          interruptions: 0,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await apiClient.post('/focus/sessions/', {
+        title: newBlock.title,
+        user: user?.id,
+        start_time: startTime,
+        end_time: new Date(new Date(startTime).getTime() + newBlock.duration * 60 * 1000).toISOString(),
+        duration: newBlock.duration,
+        notes: newBlock.title,
+        productivity_score: 0,
+        interruptions: 0,
+      });
 
       const focusBlock: FocusBlock = {
         id: data.id,
@@ -182,14 +173,9 @@ const Planner = () => {
     if (!block) return;
 
     try {
-      const { error } = await supabase
-        .from('focus_sessions')
-        .update({
-          end_time: block.completed ? null : new Date().toISOString()
-        })
-        .eq('id', blockId);
-
-      if (error) throw error;
+      await apiClient.patch(`/focus/sessions/${blockId}/`, {
+        end_time: block.completed ? null : new Date().toISOString()
+      });
 
       setFocusBlocks(focusBlocks.map(b => 
         b.id === blockId ? { ...b, completed: !b.completed } : b

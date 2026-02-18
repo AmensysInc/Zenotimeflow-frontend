@@ -3,7 +3,7 @@ import { Calendar, Clock, MapPin, AlertTriangle, CheckCircle, Users } from "luci
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { format, parseISO, isToday, isTomorrow, isPast, startOfWeek, endOfWeek, addWeeks } from "date-fns";
 import CompanyMissedShifts from "./CompanyMissedShifts";
 
@@ -74,18 +74,12 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       console.log('Checking for missed shifts. Grace threshold:', graceThreshold.toISOString());
       
       // Find ALL scheduled shifts for this employee that started more than 15 min ago
-      const { data: overdueShifts, error: fetchError } = await supabase
-        .from('shifts')
-        .select('id, employee_id, company_id, start_time')
-        .eq('employee_id', employeeId)
-        .eq('status', 'scheduled')
-        .eq('is_missed', false)
-        .lt('start_time', graceThreshold.toISOString());
-      
-      if (fetchError) {
-        console.error('Error fetching overdue shifts:', fetchError);
-        return false;
-      }
+      const overdueShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        employee: employeeId,
+        status: 'scheduled',
+        is_missed: false,
+        start_time__lt: graceThreshold.toISOString()
+      });
       
       if (!overdueShifts || overdueShifts.length === 0) {
         console.log('No overdue shifts found');
@@ -96,29 +90,23 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       
       // Check each shift for time clock entry
       for (const shift of overdueShifts) {
-        const { data: clockEntry } = await supabase
-          .from('time_clock')
-          .select('id')
-          .eq('shift_id', shift.id)
-          .not('clock_in', 'is', null)
-          .maybeSingle();
+        const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+          shift: shift.id,
+          clock_in__isnull: false
+        });
         
-        // If no clock entry, try to mark as missed (may fail due to RLS)
-        if (!clockEntry) {
+        // If no clock entry, try to mark as missed
+        if (!clockEntries || clockEntries.length === 0) {
           console.log('Attempting to mark shift as missed:', shift.id, 'start_time:', shift.start_time);
-          const { error: updateError } = await supabase
-            .from('shifts')
-            .update({ 
+          try {
+            await apiClient.patch(`/scheduler/shifts/${shift.id}/`, { 
               is_missed: true, 
               missed_at: now.toISOString(),
               status: 'missed'
-            })
-            .eq('id', shift.id);
-          
-          if (updateError) {
-            console.log('Could not update shift in DB (RLS may prevent this):', updateError.message);
-          } else {
+            });
             markedAny = true;
+          } catch (updateError: any) {
+            console.log('Could not update shift in DB:', updateError.message);
           }
         }
       }
@@ -134,14 +122,10 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
     setLoading(true);
     
     // First get the employee's company
-    const { data: employeeData } = await supabase
-      .from('employees')
-      .select('company_id')
-      .eq('id', employeeId)
-      .single();
+    const employeeData = await apiClient.get<any>(`/scheduler/employees/${employeeId}/`);
     
-    if (employeeData?.company_id) {
-      setCompanyId(employeeData.company_id);
+    if (employeeData?.company) {
+      setCompanyId(employeeData.company);
     }
     
     const today = addWeeks(new Date(), weekOffset);
@@ -149,38 +133,25 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
     const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
     
     // Fetch own shifts
-    const { data: ownShifts, error } = await supabase
-      .from('shifts')
-      .select(`
-        *,
-        companies(name),
-        departments(name)
-      `)
-      .eq('employee_id', employeeId)
-      .gte('start_time', weekStart.toISOString())
-      .lte('start_time', weekEnd.toISOString())
-      .order('start_time', { ascending: true });
-    
-    if (!error) {
-      setShifts(ownShifts || []);
-    }
+    const ownShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      employee: employeeId,
+      start_time__gte: weekStart.toISOString(),
+      start_time__lte: weekEnd.toISOString()
+    });
+    setShifts(ownShifts.sort((a: any, b: any) => 
+      new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+    ));
     
     // Fetch approved replacement shifts for this employee
-    const { data: replacementShifts } = await supabase
-      .from('shifts')
-      .select(`
-        *,
-        companies(name),
-        departments(name),
-        employee:employees!shifts_employee_id_fkey(first_name, last_name)
-      `)
-      .eq('replacement_employee_id', employeeId)
-      .not('replacement_approved_at', 'is', null)
-      .gte('start_time', weekStart.toISOString())
-      .lte('start_time', weekEnd.toISOString())
-      .order('start_time', { ascending: true });
-    
-    setApprovedReplacements(replacementShifts || []);
+    const replacementShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      replacement_employee: employeeId,
+      replacement_approved_at__isnull: false,
+      start_time__gte: weekStart.toISOString(),
+      start_time__lte: weekEnd.toISOString()
+    });
+    setApprovedReplacements(replacementShifts.sort((a: any, b: any) => 
+      new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+    ));
     setLoading(false);
   }, [employeeId, weekOffset]);
 
@@ -198,20 +169,14 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       const weekStart = startOfWeek(today, { weekStartsOn: 1 });
       const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
 
-      const { data, error } = await supabase
-        .from('shifts')
-        .select(`
-          id, employee_id, company_id, start_time, end_time, status, notes, is_missed,
-          employees!shifts_employee_id_fkey(id, first_name, last_name),
-          departments(name)
-        `)
-        .eq('company_id', companyId)
-        .gte('start_time', weekStart.toISOString())
-        .lte('start_time', weekEnd.toISOString())
-        .order('start_time', { ascending: true });
-
-      if (error) throw error;
-      setCompanyShifts(data || []);
+      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        company: companyId,
+        start_time__gte: weekStart.toISOString(),
+        start_time__lte: weekEnd.toISOString()
+      });
+      setCompanyShifts(shifts.sort((a: any, b: any) => 
+        new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+      ));
     } catch (error) {
       console.error('Error fetching company shifts:', error);
     } finally {
@@ -230,27 +195,8 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
     runCheck();
   }, [employeeId, weekOffset]); // Only refetch when employee or week changes
   
-  // Realtime subscription for shift changes instead of polling
-  useEffect(() => {
-    if (!employeeId) return;
-    
-    const channel = supabase
-      .channel(`employee_shifts_${employeeId}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'shifts',
-        filter: `employee_id=eq.${employeeId}`
-      }, () => {
-        // Refetch on any shift changes
-        fetchData();
-      })
-      .subscribe();
-    
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [employeeId, fetchData]);
+  // Note: Real-time updates will be handled by Django Channels in the future
+  // Removed Supabase real-time subscription
 
   const getShiftStatusBadge = (shift: any) => {
     const startTime = parseISO(shift.start_time);

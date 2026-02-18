@@ -9,7 +9,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { format, parseISO, isPast, isToday } from "date-fns";
 import { toast } from "sonner";
 
@@ -27,16 +27,13 @@ export default function EmployeeTasks({ userId }: EmployeeTasksProps) {
   const fetchTasks = async () => {
     setLoading(true);
     
-    const { data, error } = await supabase
-      .from('calendar_events')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('event_type', 'task')
-      .order('start_time', { ascending: true });
-    
-    if (!error) {
-      setTasks(data || []);
-    }
+    const tasks = await apiClient.get<any[]>('/calendar/events/', {
+      user: userId,
+      event_type: 'task'
+    });
+    setTasks(tasks.sort((a: any, b: any) => 
+      new Date(a.start_time || 0).getTime() - new Date(b.start_time || 0).getTime()
+    ));
     setLoading(false);
   };
 
@@ -59,12 +56,7 @@ export default function EmployeeTasks({ userId }: EmployeeTasksProps) {
         updates.completed_at = null;
       }
       
-      const { error } = await supabase
-        .from('calendar_events')
-        .update(updates)
-        .eq('id', taskId);
-      
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${taskId}/`, updates);
       
       // Update local state
       setTasks(prev => prev.map(task => 

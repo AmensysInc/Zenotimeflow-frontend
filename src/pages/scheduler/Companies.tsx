@@ -3,7 +3,7 @@ import { Plus, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import { useCompanies, useOrganizations } from "@/hooks/useSchedulerDatabase";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import CreateCompanyModal from "@/components/scheduler/CreateCompanyModal";
 import EditCompanyModal from "@/components/scheduler/EditCompanyModal";
 import CompanyDetailModal from "@/components/scheduler/CompanyDetailModal";
@@ -34,35 +34,34 @@ export default function Companies() {
     const fetchUserRole = async () => {
       if (!user) return;
       
-      const { data } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id);
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const roleNames = roles.map((r: any) => r.role);
       
       // Also check if user is in employees table
-      const { data: employeeData } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
-      
-      if (data && data.length > 0) {
-        const roles = data.map(item => item.role);
-        if (roles.includes('super_admin')) {
+      try {
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+        const hasEmployee = employees && employees.length > 0;
+        
+        if (roleNames.includes('super_admin')) {
           setUserRole('super_admin');
-        } else if (roles.includes('operations_manager')) {
+        } else if (roleNames.includes('operations_manager')) {
           setUserRole('operations_manager');
-        } else if (roles.includes('manager')) {
+        } else if (roleNames.includes('manager')) {
           setUserRole('manager');
-        } else if (roles.includes('admin')) {
+        } else if (roleNames.includes('admin')) {
           setUserRole('admin');
-        } else if (roles.includes('employee') || employeeData) {
+        } else if (roleNames.includes('employee') || hasEmployee) {
           setUserRole('employee');
         } else {
           setUserRole('user');
         }
-      } else if (employeeData) {
-        setUserRole('employee');
+      } catch {
+        if (roleNames.includes('employee')) {
+          setUserRole('employee');
+        } else {
+          setUserRole('user');
+        }
       }
     };
 

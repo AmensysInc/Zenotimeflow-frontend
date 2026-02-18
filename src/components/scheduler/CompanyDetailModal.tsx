@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { useEmployees, Employee } from "@/hooks/useSchedulerDatabase";
 import { useUserRole } from "@/hooks/useUserRole";
 import { toast } from "sonner";
@@ -69,14 +69,13 @@ export default function CompanyDetailModal({
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, email, mobile_number')
-        .eq('user_id', company.company_manager_id)
-        .single();
-
-      if (error) throw error;
-      setCompanyManager(data);
+      const userData = await apiClient.get<any>(`/auth/users/${company.company_manager_id}/`);
+      setCompanyManager({
+        user_id: userData.id,
+        full_name: userData.profile?.full_name || '',
+        email: userData.email || '',
+        mobile_number: userData.profile?.mobile_number || ''
+      });
     } catch (error) {
       console.error('Error fetching company manager:', error);
     } finally {

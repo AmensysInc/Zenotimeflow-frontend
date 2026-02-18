@@ -15,7 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { toast } from "sonner";
 import AdminHoursReport from "@/components/scheduler/AdminHoursReport";
 import AdminTasksOverview from "@/components/scheduler/AdminTasksOverview";
@@ -44,10 +44,7 @@ export default function SchedulerTimeClock() {
 
   const loadCompanies = async () => {
     try {
-      const { data } = await (supabase as any)
-        .from('companies')
-        .select('id, name, type')
-        .order('name');
+      const data = await apiClient.get<any[]>('/scheduler/companies/');
       
       setCompanies(data || []);
       
@@ -63,11 +60,7 @@ export default function SchedulerTimeClock() {
     if (!selectedCompany) return;
     
     try {
-      const { data } = await (supabase as any)
-        .from('departments')
-        .select('id, name')
-        .eq('company_id', selectedCompany)
-        .order('name');
+      const data = await apiClient.get<any[]>('/scheduler/departments/', { company: selectedCompany });
       
       setLocations(data || []);
       setSelectedLocation("all");
@@ -81,37 +74,24 @@ export default function SchedulerTimeClock() {
     
     setLoading(true);
     try {
-      let timeQuery = (supabase as any)
-        .from('time_clock')
-        .select(`
-          *,
-          employees!inner(
-            first_name, 
-            last_name, 
-            company_id,
-            department_id
-          )
-        `)
-        .eq('employees.company_id', selectedCompany)
-        .order('created_at', { ascending: false });
-
+      // Get employees first, then get their time clock entries
+      const employeesParams: any = { company: selectedCompany, status: 'active' };
       if (selectedLocation && selectedLocation !== "all") {
-        timeQuery = timeQuery.eq('employees.department_id', selectedLocation);
+        employeesParams.department = selectedLocation;
       }
 
-      const { data: timeData } = await timeQuery;
-
-      let employeesQuery = (supabase as any)
-        .from('employees')
-        .select('id, first_name, last_name, status, company_id, department_id')
-        .eq('status', 'active')
-        .eq('company_id', selectedCompany);
-
-      if (selectedLocation && selectedLocation !== "all") {
-        employeesQuery = employeesQuery.eq('department_id', selectedLocation);
+      const employeesData = await apiClient.get<any[]>('/scheduler/employees/', employeesParams);
+      
+      // Get time clock entries for all employees
+      const allTimeEntries: any[] = [];
+      for (const emp of employeesData) {
+        const entries = await apiClient.get<any[]>('/scheduler/time-clock/', { employee: emp.id });
+        allTimeEntries.push(...entries.map(e => ({ ...e, employees: emp })));
       }
-
-      const { data: employeesData } = await employeesQuery;
+      
+      const timeData = allTimeEntries.sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
 
       setTimeEntries(timeData || []);
       setEmployees(employeesData || []);
@@ -157,16 +137,9 @@ export default function SchedulerTimeClock() {
         toast.warning('Clocking in without location');
       }
       
-      const { data, error } = await supabase
-        .from('time_clock')
-        .insert([{
-          employee_id: employeeId,
-          clock_in: new Date().toISOString(),
-        }])
-        .select()
-        .single();
-      
-      if (error) throw error;
+      await apiClient.post('/scheduler/time-clock/clock_in/', {
+        employee_id: employeeId
+      });
       
       toast.success('Clocked in successfully');
       loadTimeClockData();
@@ -197,13 +170,11 @@ export default function SchedulerTimeClock() {
       const totalHours = Math.round((totalMinutes / 60) * 100) / 100;
       const overtimeHours = totalHours > 8 ? Math.round((totalHours - 8) * 100) / 100 : 0;
       
-      const { error } = await supabase
-        .from('time_clock')
-        .update({
-          clock_out: clockOutTime.toISOString(),
-          total_hours: totalHours,
-          overtime_hours: overtimeHours,
-        })
+      await apiClient.patch(`/scheduler/time-clock/${currentClockEntry.id}/`, {
+        clock_out: clockOutTime.toISOString(),
+        total_hours: totalHours,
+        overtime_hours: overtimeHours,
+      })
         .eq('id', entryId);
       
       if (error) throw error;

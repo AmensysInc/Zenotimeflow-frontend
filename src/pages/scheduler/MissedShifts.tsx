@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserRole } from "@/hooks/useUserRole";
 import { useMissedShifts, MissedShift, ReplacementRequest } from "@/hooks/useMissedShifts";
@@ -34,11 +34,8 @@ export default function MissedShifts() {
   useEffect(() => {
     const getMyCompanyId = async () => {
       if (!user) return;
-      const { data } = await supabase
-        .from('employees')
-        .select('company_id')
-        .eq('user_id', user.id)
-        .maybeSingle();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const data = employees && employees.length > 0 ? employees[0] : null;
       setMyCompanyId(data?.company_id || null);
     };
     getMyCompanyId();
@@ -66,26 +63,22 @@ export default function MissedShifts() {
       if (!user) return;
 
       if (isSuperAdmin) {
-        const { data: orgs } = await supabase.from('organizations').select('id, name').order('name');
+        const orgs = await apiClient.get<any[]>('/scheduler/organizations/');
         setOrganizations(orgs || []);
       }
 
-      let companyQuery = supabase.from('companies').select('id, name, organization_id').order('name');
-      
+      const params: any = {};
       if (isOrganizationManager) {
-        const { data: orgs } = await supabase
-          .from('organizations')
-          .select('id')
-          .eq('organization_manager_id', user.id);
+        const orgs = await apiClient.get<any[]>('/scheduler/organizations/', { organization_manager: user.id });
         const orgIds = orgs?.map(o => o.id) || [];
         if (orgIds.length > 0) {
-          companyQuery = companyQuery.in('organization_id', orgIds);
+          params.organization = orgIds.join(',');
         }
       } else if (isCompanyManager) {
-        companyQuery = companyQuery.eq('company_manager_id', user.id);
+        params.company_manager = user.id;
       }
 
-      const { data: companiesData } = await companyQuery;
+      const companiesData = await apiClient.get<any[]>('/scheduler/companies/', params);
       setCompanies(companiesData || []);
       
       // Auto-select if only one company

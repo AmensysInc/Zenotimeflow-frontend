@@ -50,6 +50,28 @@ npm run dev
 - Click on "New codespace" to launch a new Codespace environment.
 - Edit files directly within the Codespace and commit and push your changes once you're done.
 
+## Configuration
+
+### Backend Setup
+
+This project now uses a Django backend instead of Supabase. See the `zeno-time-backend/` directory for the backend implementation.
+
+**Backend Setup:**
+1. Navigate to `zeno-time-backend/` directory
+2. Follow the setup instructions in `zeno-time-backend/SETUP_INSTRUCTIONS.md`
+3. Start the Django server: `python manage.py runserver`
+
+### Frontend Environment Variables
+
+1. Create a `.env.local` file in the root directory
+2. Add your API URL:
+
+```env
+VITE_API_URL=http://localhost:8000/api
+```
+
+**Note:** The Supabase integration has been removed. The frontend now uses the Django REST API backend.
+
 ## What technologies are used for this project?
 
 This project is built with:
@@ -59,6 +81,7 @@ This project is built with:
 - React
 - shadcn-ui
 - Tailwind CSS
+- Supabase (Backend & Database)
 
 ## How can I deploy this project?
 

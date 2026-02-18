@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useEmployees, useDepartments, Employee } from "@/hooks/useSchedulerDatabase";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { Trash2 } from "lucide-react";
 
 interface EditEmployeeModalProps {
@@ -76,17 +76,11 @@ export default function EditEmployeeModal({
   const syncProfileUpdate = async (employeeEmail: string, updates: { full_name?: string; email?: string; status?: string }) => {
     try {
       // Find profile by email and update it
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('user_id')
-        .eq('email', employeeEmail)
-        .single();
+      const users = await apiClient.get<any[]>('/auth/users/', { email: employeeEmail });
+      const user = users && users.length > 0 ? users[0] : null;
 
-      if (profile) {
-        await supabase
-          .from('profiles')
-          .update(updates)
-          .eq('user_id', profile.user_id);
+      if (user) {
+        await apiClient.patch(`/auth/profiles/${user.id}/`, updates);
       }
     } catch (error) {
       console.error('Error syncing profile update:', error);

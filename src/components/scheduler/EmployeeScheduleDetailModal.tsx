@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Calendar, Clock, Edit2, Save, X } from "lucide-react";
 import { format, parseISO, differenceInMinutes } from "date-fns";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { toast } from "sonner";
 
 interface ShiftWithClock {
@@ -93,12 +93,7 @@ export default function EmployeeScheduleDetailModal({
         updates.total_hours = Math.max(0, totalMin / 60);
       }
 
-      const { error } = await supabase
-        .from("time_clock")
-        .update(updates)
-        .eq("id", shift.clockEntry.id);
-
-      if (error) throw error;
+      await apiClient.patch(`/scheduler/time-clock/${shift.clockEntry.id}/`, updates);
       toast.success("Time clock updated");
       setEditingId(null);
       onDataUpdated();

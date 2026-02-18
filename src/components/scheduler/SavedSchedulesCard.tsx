@@ -3,7 +3,7 @@ import { Calendar, Edit, Trash2, Clock, Users, Copy } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { useToast } from "@/hooks/use-toast";
 import { format, parseISO } from "date-fns";
 import {
@@ -79,13 +79,9 @@ export default function SavedSchedulesCard({
   const fetchSavedSchedules = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('schedule_templates')
-        .select('*')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const templates = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+        company: companyId
+      });
       
       // Parse template_data from JSON
       const parsedData = (data || []).map(item => ({
@@ -116,23 +112,22 @@ export default function SavedSchedulesCard({
 
       // If duplicates exist for the same week, delete all for that week to avoid "ghost" schedules.
       // (User typically expects the week to disappear entirely.)
-      const deleteQuery = weekStart
-        ? supabase
-            .from('schedule_templates')
-            .delete()
-            .eq('company_id', companyId)
-            // PostgREST JSON filter
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-ignore
-            .eq('template_data->>week_start', weekStart)
-        : supabase
-            .from('schedule_templates')
-            .delete()
-            .eq('id', scheduleToDelete.id);
-
-      const { error } = await deleteQuery;
-
-      if (error) throw error;
+      if (weekStart) {
+        const templates = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+          company: companyId
+        });
+        const matchingTemplates = templates.filter((t: any) => {
+          const data = typeof t.template_data === 'string' 
+            ? JSON.parse(t.template_data) 
+            : t.template_data;
+          return data?.week_start === weekStart;
+        });
+        await Promise.all(matchingTemplates.map((t: any) => 
+          apiClient.delete(`/scheduler/schedule-templates/${t.id}/`)
+        ));
+      } else {
+        await apiClient.delete(`/scheduler/schedule-templates/${scheduleToDelete.id}/`);
+      }
 
       // Optimistic UI update
       setSavedSchedules((prev) =>

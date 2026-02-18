@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCompanies } from "@/hooks/useSchedulerDatabase";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { toast } from "sonner";
 
 interface CreateCompanyModalProps {
@@ -58,26 +58,20 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
   const fetchAvailableUsers = async () => {
     try {
       // Fetch users with manager role for company manager assignment
-      const { data: managerRoles } = await supabase
-        .from('user_roles')
-        .select('user_id')
-        .eq('role', 'manager');
+      const users = await apiClient.get<any[]>('/auth/users/');
+      const managerUsers = users.filter((u: any) => {
+        const roles = u.roles || [];
+        return roles.some((r: any) => r.role === 'manager') && 
+               (u.profile?.status === 'active' || !u.profile?.status);
+      });
 
-      const managerUserIds = managerRoles?.map(r => r.user_id) || [];
+      const profiles = managerUsers.map((u: any) => ({
+        user_id: u.id,
+        full_name: u.profile?.full_name || u.full_name || '',
+        email: u.email
+      }));
 
-      if (managerUserIds.length === 0) {
-        setAvailableUsers([]);
-        return;
-      }
-
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, email')
-        .in('user_id', managerUserIds)
-        .or('status.eq.active,status.is.null')
-        .order('full_name');
-
-      setAvailableUsers(profiles || []);
+      setAvailableUsers(profiles);
     } catch (error) {
       console.error('Error fetching users:', error);
       toast.error('Failed to load available users');
@@ -109,13 +103,18 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
 
       // Assign manager role to the selected company manager
       if (formData.company_manager_id && formData.company_manager_id !== "none") {
-        await supabase
-          .from('user_roles')
-          .upsert({ 
-            user_id: formData.company_manager_id, 
+        const userData = await apiClient.get<any>(`/auth/users/${formData.company_manager_id}/`);
+        const hasSchedulerManagerRole = userData?.roles?.some((r: any) => 
+          r.role === 'manager' && r.app_type === 'scheduler'
+        );
+        
+        if (!hasSchedulerManagerRole) {
+          await apiClient.post('/auth/user-roles/', {
+            user: formData.company_manager_id,
             role: 'manager',
             app_type: 'scheduler'
           });
+        }
       }
 
       onOpenChange(false);

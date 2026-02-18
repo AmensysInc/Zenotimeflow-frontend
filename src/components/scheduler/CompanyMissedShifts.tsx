@@ -3,7 +3,7 @@ import { AlertTriangle, Clock, MapPin, UserCheck, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { useAuth } from "@/hooks/useAuth";
 import { format, parseISO } from "date-fns";
 import { toast } from "sonner";
@@ -60,31 +60,23 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
       setLoading(true);
       
       // Fetch missed shifts from the same company (excluding own shifts)
-      const { data, error } = await supabase
-        .from('shifts')
-        .select(`
-          *,
-          employee:employees!shifts_employee_id_fkey(id, first_name, last_name),
-          company:companies(id, name),
-          department:departments(name)
-        `)
-        .eq('company_id', companyId)
-        .eq('is_missed', true)
-        .neq('employee_id', employeeId) // Exclude own missed shifts
-        .is('replacement_employee_id', null) // Only show shifts without approved replacement
-        .order('start_time', { ascending: false });
-      
-      if (error) throw error;
-      setMissedShifts(data || []);
+      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        company: companyId,
+        is_missed: true,
+        replacement_employee__isnull: true
+      });
+      const filteredShifts = shifts.filter((s: any) => s.employee !== employeeId);
+      setMissedShifts(filteredShifts.sort((a: any, b: any) => 
+        new Date(b.start_time || 0).getTime() - new Date(a.start_time || 0).getTime()
+      ));
       
       // Fetch my pending requests
-      const { data: requests } = await supabase
-        .from('shift_replacement_requests')
-        .select('shift_id')
-        .eq('replacement_employee_id', employeeId)
-        .eq('status', 'pending');
+      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+        replacement_employee: employeeId,
+        status: 'pending'
+      });
       
-      setMyRequests(requests?.map(r => r.shift_id) || []);
+      setMyRequests(requests.map((r: any) => r.shift));
     } catch (error) {
       console.error('Error fetching missed shifts:', error);
     } finally {
@@ -103,12 +95,11 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
       setRequesting(true);
       
       // Check if already requested
-      const { data: existing } = await supabase
-        .from('shift_replacement_requests')
-        .select('id')
-        .eq('shift_id', selectedShift.id)
-        .eq('replacement_employee_id', employeeId)
-        .maybeSingle();
+      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+        shift: selectedShift.id,
+        replacement_employee: employeeId
+      });
+      const existing = requests && requests.length > 0 ? requests[0] : null;
       
       if (existing) {
         toast.error('You have already requested this shift');
@@ -117,15 +108,13 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
       }
       
       // Create replacement request
-      const { error } = await supabase
-        .from('shift_replacement_requests')
-        .insert({
-          shift_id: selectedShift.id,
-          original_employee_id: selectedShift.employee_id,
-          replacement_employee_id: employeeId,
-          company_id: selectedShift.company_id,
-          status: 'pending'
-        });
+      await apiClient.post('/scheduler/shift-replacement-requests/', {
+        shift: selectedShift.id,
+        original_employee: selectedShift.employee,
+        replacement_employee: employeeId,
+        company: selectedShift.company,
+        status: 'pending'
+      });
       
       if (error) throw error;
       

@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Play, Pause, Square, Timer, Target, Brain, Users, FileText, ChevronDown, ChevronUp, Calendar, Plus, Filter } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useToast } from "@/hooks/use-toast";
 
 interface FocusSession {
@@ -117,21 +117,11 @@ const Focus = () => {
     if (!user) return;
 
     try {
-      const { data: roles, error } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .limit(1)
-        .single();
-
-      if (error) {
-        console.error('Error checking user role:', error);
-        setUserRole('user');
-        return;
-      }
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const role = roles.length > 0 ? roles[0].role : 'user';
       
-      console.log('User role set to:', roles?.role || 'user', 'for user:', user?.email);
-      const role = roles?.role || 'user';
+      console.log('User role set to:', role, 'for user:', user?.email);
       setUserRole(role);
       
       // Load users if manager
@@ -148,23 +138,18 @@ const Focus = () => {
     if (!user) return;
 
     try {
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, email')
-        .neq('user_id', user.id) // Exclude current user from the list
-        .neq('status', 'deleted') // Exclude deleted users
-        .eq('status', 'active') // Only show active users
-        .order('full_name');
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const profiles = allUsers
+        .filter((u: any) => u.id !== user.id && u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
+        .map((u: any) => ({ 
+          id: u.id, 
+          full_name: u.profile?.full_name || u.email || 'Unknown', 
+          email: u.email || '' 
+        }))
+        .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-      if (profilesError) {
-        console.error('Error loading profiles:', profilesError);
-      } else if (profiles) {
-        setUsers(profiles.map(p => ({ 
-          id: p.user_id, 
-          full_name: p.full_name || p.email || 'Unknown', 
-          email: p.email || '' 
-        })));
-        console.log('Loaded users:', profiles.length);
+      setUsers(profiles);
+      console.log('Loaded users:', profiles.length);
       }
     } catch (error) {
       console.error('Error in loadUsers:', error);
@@ -176,22 +161,10 @@ const Focus = () => {
 
     const targetUserId = selectedUserId || user.id;
     
-    const { data, error } = await supabase
-      .from("focus_sessions")
-      .select("*")
-      .eq('user_id', targetUserId)
-      .order("created_at", { ascending: false })
-      .limit(20);
-
-    if (error) {
-      toast({
-        title: "Error fetching sessions",
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
-      setSessions(data || []);
-    }
+    const sessions = await apiClient.get<any[]>('/focus/sessions/', { 
+      user: targetUserId 
+    });
+    setSessions(sessions.slice(0, 20));
     setIsLoading(false);
   };
 
@@ -200,19 +173,12 @@ const Focus = () => {
 
     const targetUserId = selectedUserId || user.id;
     
-    const { data, error } = await supabase
-      .from("calendar_events")
-      .select("id, title, description, priority, created_by, user_id, event_type, start_time, end_time")
-      .eq('user_id', targetUserId)
-      .eq('event_type', 'task')
-      .eq('completed', false)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("Error fetching tasks:", error);
-    } else {
-      setTasks(data || []);
-    }
+    const tasks = await apiClient.get<any[]>('/calendar/events/', { 
+      user: targetUserId,
+      event_type: 'task',
+      completed: false
+    });
+    setTasks(tasks);
   };
 
   const fetchPlannedSessions = async () => {
@@ -226,28 +192,18 @@ const Focus = () => {
     const selectedTask = taskId ? tasks.find(t => t.id === taskId) : null;
     const sessionTitle = selectedTask ? `Focus: ${selectedTask.title}` : "Focus Session";
     
-    const { data, error } = await supabase
-      .from("focus_sessions")
-      .insert([{
+    try {
+      const data = await apiClient.post('/focus/sessions/', {
         title: sessionTitle,
         start_time: new Date().toISOString(),
         end_time: new Date(Date.now() + 25 * 60 * 1000).toISOString(), // 25 minutes default
-        user_id: user?.id,
+        user: user?.id,
         interruptions: 0,
         productivity_score: 0,
         notes: "",
         task_id: taskId || null,
-      }])
-      .select()
-      .single();
-
-    if (error) {
-      toast({
-        title: "Error starting session",
-        description: error.message,
-        variant: "destructive",
       });
-    } else {
+      
       setCurrentSession(data);
       setIsActive(true);
       setSeconds(0);
@@ -259,6 +215,12 @@ const Focus = () => {
       toast({
         title: "Focus session started",
         description: selectedTask ? `Working on: ${selectedTask.title}` : "Stay focused and productive!",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error starting session",
+        description: error.message || "Failed to start session",
+        variant: "destructive",
       });
     }
   };
@@ -279,27 +241,18 @@ const Focus = () => {
       return;
     }
 
-    const { error } = await supabase
-      .from("focus_sessions")
-      .insert([{
+    try {
+      await apiClient.post('/focus/sessions/', {
         title: planTitle,
         description: planDescription,
         start_time: new Date(planDate).toISOString(),
         end_time: new Date(new Date(planDate).getTime() + parseInt(planDuration) * 60 * 1000).toISOString(),
-        user_id: user?.id,
+        user: user?.id,
         task_id: (planTaskId && planTaskId !== "none") ? planTaskId : null,
         interruptions: 0,
         productivity_score: 0,
         notes: "Planned session - not yet started",
-      }]);
-
-    if (error) {
-      toast({
-        title: "Error creating planned session",
-        description: error.message,
-        variant: "destructive",
       });
-    } else {
       toast({
         title: "Planned session created",
         description: `Scheduled for ${new Date(planDate).toLocaleDateString()}`
@@ -328,24 +281,15 @@ const Focus = () => {
     const endTime = new Date().toISOString();
     const duration = Math.floor(seconds / 60); // Convert to minutes
 
-    const { error } = await supabase
-      .from("focus_sessions")
-      .update({
+    try {
+      await apiClient.patch(`/focus/sessions/${currentSession.id}/`, {
         end_time: endTime,
         duration,
         productivity_score: productivityScore,
         interruptions,
         notes: notes || null,
-      })
-      .eq("id", currentSession.id);
-
-    if (error) {
-      toast({
-        title: "Error ending session",
-        description: error.message,
-        variant: "destructive",
       });
-    } else {
+      
       toast({
         title: "Session completed",
         description: `Great work! You focused for ${duration} minutes.`,
@@ -357,6 +301,12 @@ const Focus = () => {
       setProductivityScore(5);
       setInterruptions(0);
       fetchSessions();
+    } catch (error: any) {
+      toast({
+        title: "Error ending session",
+        description: error.message || "Failed to end session",
+        variant: "destructive",
+      });
     }
   };
 

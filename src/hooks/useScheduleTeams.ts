@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { useToast } from '@/hooks/use-toast';
 
 export interface ScheduleTeam {
@@ -26,13 +26,7 @@ export function useScheduleTeams(companyId: string | undefined) {
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('schedule_teams')
-        .select('*')
-        .eq('company_id', companyId)
-        .order('name');
-
-      if (error) throw error;
+      const data = await apiClient.get<ScheduleTeam[]>('/scheduler/teams/', { company: companyId });
       setTeams(data || []);
     } catch (error: any) {
       console.error('Error fetching teams:', error);
@@ -49,21 +43,12 @@ export function useScheduleTeams(companyId: string | undefined) {
     if (!companyId) return null;
 
     try {
-      const { data: userData } = await supabase.auth.getUser();
-      
-      const { data, error } = await supabase
-        .from('schedule_teams')
-        .insert({
-          name: team.name,
-          description: team.description || null,
-          color: team.color || '#3B82F6',
-          company_id: companyId,
-          created_by: userData.user?.id
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await apiClient.post<ScheduleTeam>('/scheduler/teams/', {
+        name: team.name,
+        description: team.description || null,
+        color: team.color || '#3B82F6',
+        company: companyId
+      });
 
       toast({
         title: 'Team Created',
@@ -84,12 +69,7 @@ export function useScheduleTeams(companyId: string | undefined) {
 
   const updateTeam = async (teamId: string, updates: { name?: string; description?: string; color?: string }) => {
     try {
-      const { error } = await supabase
-        .from('schedule_teams')
-        .update(updates)
-        .eq('id', teamId);
-
-      if (error) throw error;
+      await apiClient.patch(`/scheduler/teams/${teamId}/`, updates);
 
       toast({
         title: 'Team Updated',
@@ -110,12 +90,7 @@ export function useScheduleTeams(companyId: string | undefined) {
 
   const deleteTeam = async (teamId: string) => {
     try {
-      const { error } = await supabase
-        .from('schedule_teams')
-        .delete()
-        .eq('id', teamId);
-
-      if (error) throw error;
+      await apiClient.delete(`/scheduler/teams/${teamId}/`);
 
       toast({
         title: 'Team Deleted',
@@ -136,12 +111,7 @@ export function useScheduleTeams(companyId: string | undefined) {
 
   const assignEmployeeToTeam = async (employeeId: string, teamId: string | null) => {
     try {
-      const { error } = await supabase
-        .from('employees')
-        .update({ team_id: teamId })
-        .eq('id', employeeId);
-
-      if (error) throw error;
+      await apiClient.patch(`/scheduler/employees/${employeeId}/`, { team: teamId });
       return true;
     } catch (error: any) {
       toast({

@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useEmployeeTimeClock } from "@/hooks/useEmployeeTimeClock";
 import { usePersistentTimeClock } from "@/hooks/usePersistentTimeClock";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth, isToday, parseISO } from "date-fns";
 import EmployeeShifts from "@/components/scheduler/EmployeeShifts";
 import EmployeeTasks from "@/components/scheduler/EmployeeTasks";
@@ -66,18 +66,18 @@ export default function EmployeeDashboard() {
       const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
       
       // Fetch own shifts
-      const { data } = await supabase
-        .from('shifts')
-        .select('*')
-        .eq('employee_id', employee.id)
-        .gte('start_time', weekStart.toISOString())
-        .lte('start_time', weekEnd.toISOString())
-        .order('start_time', { ascending: true });
+      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        employee: employee.id,
+        start_time__gte: weekStart.toISOString(),
+        start_time__lte: weekEnd.toISOString()
+      });
       
-      setShifts(data || []);
+      setShifts(shifts.sort((a: any, b: any) => 
+        new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+      ));
       
       // Find today's shift
-      const todaysShift = data?.find(shift => {
+      const todaysShift = shifts.find((shift: any) => {
         const shiftDate = parseISO(shift.start_time);
         return isToday(shiftDate);
       });
@@ -89,18 +89,13 @@ export default function EmployeeDashboard() {
       const todayEnd = new Date();
       todayEnd.setHours(23, 59, 59, 999);
       
-      const { data: replacementShifts } = await supabase
-        .from('shifts')
-        .select(`
-          *,
-          employee:employees!shifts_employee_id_fkey(first_name, last_name)
-        `)
-        .eq('replacement_employee_id', employee.id)
-        .not('replacement_approved_at', 'is', null)
-        .is('replacement_started_at', null) // Not yet started
-        .gte('start_time', todayStart.toISOString())
-        .lte('start_time', todayEnd.toISOString())
-        .order('start_time', { ascending: true });
+      const replacementShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        replacement_employee: employee.id,
+        replacement_approved_at__isnull: false,
+        replacement_started_at__isnull: true,
+        start_time__gte: todayStart.toISOString(),
+        start_time__lte: todayEnd.toISOString()
+      });
       
       if (replacementShifts && replacementShifts.length > 0) {
         setApprovedReplacementShift(replacementShifts[0]);
@@ -121,26 +116,17 @@ export default function EmployeeDashboard() {
       const now = new Date();
       
       // Update shift with replacement_started_at
-      const { error: shiftError } = await supabase
-        .from('shifts')
-        .update({
-          replacement_started_at: now.toISOString()
-        })
-        .eq('id', approvedReplacementShift.id);
-      
-      if (shiftError) throw shiftError;
+      await apiClient.patch(`/scheduler/shifts/${approvedReplacementShift.id}/`, {
+        replacement_started_at: now.toISOString()
+      });
       
       // Create time clock entry for the replacement shift
-      const { error: clockError } = await supabase
-        .from('time_clock')
-        .insert({
-          employee_id: employee.id,
-          shift_id: approvedReplacementShift.id,
-          clock_in: now.toISOString(),
-          notes: `Replacement shift - covering for ${approvedReplacementShift.employee?.first_name} ${approvedReplacementShift.employee?.last_name}`
-        });
-      
-      if (clockError) throw clockError;
+      await apiClient.post('/scheduler/time-clock/', {
+        employee: employee.id,
+        shift: approvedReplacementShift.id,
+        clock_in: now.toISOString(),
+        notes: `Replacement shift - covering for ${approvedReplacementShift.employee_first_name || ''} ${approvedReplacementShift.employee_last_name || ''}`
+      });
       
       toast.success('Clocked in for replacement shift successfully!');
       setApprovedReplacementShift(null);

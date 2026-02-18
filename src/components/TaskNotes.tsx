@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -89,48 +89,38 @@ export const TaskNotes = ({ taskId, taskTitle, assignedUsers, isAdmin, currentUs
     setIsLoading(true);
 
     try {
-      let query = supabase
-        .from('task_notes')
-        .select('*')
-        .eq('task_id', taskId)
-        .order('created_at', { ascending: true });
-
-      // Filter based on user type and selection
+      const params: any = { task: taskId };
       if (isAdmin && selectedUser) {
-        // Admin viewing notes for specific user
-        query = query.eq('user_id', selectedUser);
+        params.user = selectedUser;
       } else if (!isAdmin) {
-        // Regular user viewing their own notes
-        query = query.eq('user_id', user.id);
+        params.user = user.id;
       }
 
-      const { data: notesData, error } = await query;
-
-      if (error) throw error;
+      const notesData = await apiClient.get<any[]>('/tasks/comments/', params);
 
       // Get author profiles for notes
       const notesWithAuthors = await Promise.all(
         (notesData || []).map(async (note) => {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('full_name, email')
-            .eq('user_id', note.author_id)
-            .maybeSingle();
-
-          // Check if author is admin
-          const { data: roleData } = await supabase
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', note.author_id);
-
-          const isAdminAuthor = roleData?.some(r => r.role === 'super_admin' || r.role === 'manager');
-          
-          return {
-            ...note,
-            files: Array.isArray(note.files) ? (note.files as string[]) : [],
-            author_name: profile?.full_name || profile?.email || (isAdminAuthor ? 'Manager' : 'User'),
-            is_admin_author: isAdminAuthor
-          };
+          try {
+            const author = await apiClient.get<any>(`/auth/users/${note.author || note.author_id}/`);
+            const isAdminAuthor = author?.roles?.some((r: any) => 
+              r.role === 'super_admin' || r.role === 'manager' || r.role === 'operations_manager'
+            ) || false;
+            
+            return {
+              ...note,
+              files: Array.isArray(note.files) ? (note.files as string[]) : [],
+              author_name: author?.profile?.full_name || author?.full_name || author?.email || (isAdminAuthor ? 'Manager' : 'User'),
+              is_admin_author: isAdminAuthor
+            };
+          } catch (error) {
+            return {
+              ...note,
+              files: Array.isArray(note.files) ? (note.files as string[]) : [],
+              author_name: 'User',
+              is_admin_author: false
+            };
+          }
         })
       );
 
@@ -224,20 +214,32 @@ export const TaskNotes = ({ taskId, taskTitle, assignedUsers, isAdmin, currentUs
         const fileExt = file.name.split('.').pop();
         const fileName = `notes/${user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
         
-        const { data, error } = await supabase.storage
-          .from('task-attachments')
-          .upload(fileName, file);
+        // Upload file to Django backend
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('task_id', taskId);
+        
+        try {
+          const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/tasks/attachments/`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiClient.getToken()}`
+            },
+            body: formData
+          });
 
-        if (error) {
+          if (!response.ok) {
+            console.error('File upload error');
+            continue;
+          }
+
+          const result = await response.json();
+          const fileUrl = result.url || result.file_url;
+          fileUrls.push(fileUrl);
+        } catch (error) {
           console.error('File upload error:', error);
           continue;
         }
-
-        const { data: { publicUrl } } = supabase.storage
-          .from('task-attachments')
-          .getPublicUrl(fileName);
-
-        fileUrls.push(publicUrl);
       }
 
       // Append location to note if available
@@ -247,17 +249,13 @@ export const TaskNotes = ({ taskId, taskTitle, assignedUsers, isAdmin, currentUs
       }
 
       // Create the note
-      const { error } = await supabase
-        .from('task_notes')
-        .insert({
-          task_id: taskId,
-          user_id: targetUserId,
-          author_id: user.id,
-          note_text: noteText,
-          files: fileUrls
-        });
-
-      if (error) throw error;
+      await apiClient.post('/tasks/comments/', {
+        task: taskId,
+        user: targetUserId,
+        author: user.id,
+        note_text: noteText,
+        files: fileUrls
+      });
 
       setNewNote("");
       setSelectedFiles([]);

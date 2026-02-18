@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { toast } from 'sonner';
 
 export interface Organization {
@@ -103,15 +103,7 @@ export function useOrganizations() {
 
   const fetchOrganizations = async () => {
     try {
-      // RLS policies will automatically filter based on user role:
-      // - Super admins see all organizations
-      // - Organization managers only see their assigned organization
-      const { data, error } = await (supabase as any)
-        .from('organizations')
-        .select('*')
-        .order('name', { ascending: true });
-
-      if (error) throw error;
+      const data = await apiClient.get<Organization[]>('/scheduler/organizations/');
       setOrganizations(data || []);
     } catch (error) {
       console.error('Error fetching organizations:', error);
@@ -123,13 +115,18 @@ export function useOrganizations() {
 
   const createOrganization = async (orgData: Omit<Organization, 'id' | 'created_at' | 'updated_at'>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('organizations')
-        .insert([orgData])
-        .select()
-        .single();
-
-      if (error) throw error;
+      // Map field names from Supabase to Django
+      const payload: any = { ...orgData };
+      if (payload.organization_manager_id) {
+        payload.organization_manager = payload.organization_manager_id;
+        delete payload.organization_manager_id;
+      }
+      if (payload.operations_manager_id) {
+        payload.operations_manager = payload.operations_manager_id;
+        delete payload.operations_manager_id;
+      }
+      
+      const data = await apiClient.post<Organization>('/scheduler/organizations/', payload);
       
       setOrganizations(prev => [data, ...prev]);
       toast.success('Organization created successfully');
@@ -143,14 +140,18 @@ export function useOrganizations() {
 
   const updateOrganization = async (id: string, updates: Partial<Organization>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('organizations')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
+      // Map field names from Supabase to Django
+      const payload: any = { ...updates };
+      if (payload.organization_manager_id !== undefined) {
+        payload.organization_manager = payload.organization_manager_id;
+        delete payload.organization_manager_id;
+      }
+      if (payload.operations_manager_id !== undefined) {
+        payload.operations_manager = payload.operations_manager_id;
+        delete payload.operations_manager_id;
+      }
+      
+      const data = await apiClient.patch<Organization>(`/scheduler/organizations/${id}/`, payload);
       
       setOrganizations(prev => prev.map(o => o.id === id ? data : o));
       toast.success('Organization updated successfully');
@@ -164,12 +165,7 @@ export function useOrganizations() {
 
   const deleteOrganization = async (id: string) => {
     try {
-      const { error } = await (supabase as any)
-        .from('organizations')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await apiClient.delete(`/scheduler/organizations/${id}/`);
       
       setOrganizations(prev => prev.filter(o => o.id !== id));
       toast.success('Organization deleted successfully');
@@ -201,17 +197,7 @@ export function useCompanies() {
 
   const fetchCompanies = async () => {
     try {
-      // RLS policies will automatically filter based on user role:
-      // - Super admins see all companies
-      // - Organization managers see companies in their organization
-      // - Company managers see only their assigned company
-      // - Employees see only their company
-      const { data, error } = await (supabase as any)
-        .from('companies')
-        .select('*')
-        .order('name', { ascending: true });
-
-      if (error) throw error;
+      const data = await apiClient.get<Company[]>('/scheduler/companies/');
       setCompanies(data || []);
     } catch (error) {
       console.error('Error fetching companies:', error);
@@ -223,13 +209,22 @@ export function useCompanies() {
 
   const createCompany = async (companyData: Omit<Company, 'id' | 'created_at' | 'updated_at'>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('companies')
-        .insert([companyData])
-        .select()
-        .single();
-
-      if (error) throw error;
+      // Map field names from Supabase to Django
+      const payload: any = { ...companyData };
+      if (payload.organization_id) {
+        payload.organization = payload.organization_id;
+        delete payload.organization_id;
+      }
+      if (payload.company_manager_id) {
+        payload.company_manager = payload.company_manager_id;
+        delete payload.company_manager_id;
+      }
+      if (payload.operations_manager_id) {
+        payload.operations_manager = payload.operations_manager_id;
+        delete payload.operations_manager_id;
+      }
+      
+      const data = await apiClient.post<Company>('/scheduler/companies/', payload);
       
       setCompanies(prev => [data, ...prev]);
       toast.success('Company created successfully');
@@ -243,14 +238,22 @@ export function useCompanies() {
 
   const updateCompany = async (id: string, updates: Partial<Company>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('companies')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
+      // Map field names from Supabase to Django
+      const payload: any = { ...updates };
+      if (payload.organization_id !== undefined) {
+        payload.organization = payload.organization_id;
+        delete payload.organization_id;
+      }
+      if (payload.company_manager_id !== undefined) {
+        payload.company_manager = payload.company_manager_id;
+        delete payload.company_manager_id;
+      }
+      if (payload.operations_manager_id !== undefined) {
+        payload.operations_manager = payload.operations_manager_id;
+        delete payload.operations_manager_id;
+      }
+      
+      const data = await apiClient.patch<Company>(`/scheduler/companies/${id}/`, payload);
       
       setCompanies(prev => prev.map(c => c.id === id ? data : c));
       toast.success('Company updated successfully');
@@ -264,12 +267,7 @@ export function useCompanies() {
 
   const deleteCompany = async (id: string) => {
     try {
-      const { error } = await (supabase as any)
-        .from('companies')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await apiClient.delete(`/scheduler/companies/${id}/`);
       
       setCompanies(prev => prev.filter(c => c.id !== id));
       toast.success('Company deleted successfully');
@@ -301,19 +299,15 @@ export function useDepartments(companyId?: string) {
 
   const fetchDepartments = async () => {
     try {
-      let query = (supabase as any).from('departments').select('*');
-      
-      // Only filter by company_id if it's a valid UUID (not "all" or empty)
       const isValidUuid = companyId && companyId !== 'all' && 
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(companyId);
       
+      const params: any = {};
       if (isValidUuid) {
-        query = query.eq('company_id', companyId);
+        params.company = companyId;
       }
       
-      const { data, error } = await query.order('name', { ascending: true });
-
-      if (error) throw error;
+      const data = await apiClient.get<Department[]>('/scheduler/departments/', params);
       setDepartments(data || []);
     } catch (error) {
       console.error('Error fetching departments:', error);
@@ -325,13 +319,13 @@ export function useDepartments(companyId?: string) {
 
   const createDepartment = async (departmentData: Omit<Department, 'id' | 'created_at'>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('departments')
-        .insert([departmentData])
-        .select()
-        .single();
-
-      if (error) throw error;
+      const payload: any = { ...departmentData };
+      if (payload.company_id) {
+        payload.company = payload.company_id;
+        delete payload.company_id;
+      }
+      
+      const data = await apiClient.post<Department>('/scheduler/departments/', payload);
       
       setDepartments(prev => [data, ...prev]);
       toast.success('Department created successfully');
@@ -396,20 +390,13 @@ export function useEmployees(companyId?: string) {
         setLoading(true);
       }
       
-      let query = (supabase as any)
-        .from('employees')
-        .select('*')
-        .order('first_name', { ascending: true });
-      
-      // Only filter by company if not fetching all
-      if (!shouldFetchAll) {
-        query = query.eq('company_id', targetCompanyId);
+      const params: any = {};
+      if (!shouldFetchAll && targetCompanyId) {
+        params.company = targetCompanyId;
       }
       
-      const { data, error } = await query;
+      const data = await apiClient.get<Employee[]>('/scheduler/employees/', params);
 
-      if (error) throw error;
-      
       if (isMountedRef.current) {
         setEmployees(data || []);
         fetchedCompanyRef.current = targetCompanyId;
@@ -426,13 +413,25 @@ export function useEmployees(companyId?: string) {
 
   const createEmployee = async (employeeData: Omit<Employee, 'id' | 'created_at'>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('employees')
-        .insert([employeeData])
-        .select()
-        .single();
-
-      if (error) throw error;
+      const payload: any = { ...employeeData };
+      if (payload.company_id) {
+        payload.company = payload.company_id;
+        delete payload.company_id;
+      }
+      if (payload.department_id) {
+        payload.department = payload.department_id;
+        delete payload.department_id;
+      }
+      if (payload.team_id) {
+        payload.team = payload.team_id;
+        delete payload.team_id;
+      }
+      if (payload.user_id) {
+        payload.user = payload.user_id;
+        delete payload.user_id;
+      }
+      
+      const data = await apiClient.post<Employee>('/scheduler/employees/', payload);
       
       setEmployees(prev => [data, ...prev]);
       toast.success('Employee created successfully');
@@ -446,14 +445,25 @@ export function useEmployees(companyId?: string) {
 
   const updateEmployee = async (id: string, updates: Partial<Employee>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('employees')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
+      const payload: any = { ...updates };
+      if (payload.company_id !== undefined) {
+        payload.company = payload.company_id;
+        delete payload.company_id;
+      }
+      if (payload.department_id !== undefined) {
+        payload.department = payload.department_id;
+        delete payload.department_id;
+      }
+      if (payload.team_id !== undefined) {
+        payload.team = payload.team_id;
+        delete payload.team_id;
+      }
+      if (payload.user_id !== undefined) {
+        payload.user = payload.user_id;
+        delete payload.user_id;
+      }
+      
+      const data = await apiClient.patch<Employee>(`/scheduler/employees/${id}/`, payload);
       
       setEmployees(prev => prev.map(e => e.id === id ? data : e));
       toast.success('Employee updated successfully');
@@ -467,18 +477,7 @@ export function useEmployees(companyId?: string) {
 
   const deleteEmployee = async (id: string) => {
     try {
-      // IMPORTANT: PostgREST can return 204 even when 0 rows are affected (e.g. RLS blocks visibility).
-      // Request the deleted row back so we can detect a no-op delete and show a real error.
-      const { data, error } = await (supabase as any)
-        .from('employees')
-        .delete()
-        .eq('id', id)
-        .select('id');
-
-      if (error) throw error;
-      if (!Array.isArray(data) || data.length === 0) {
-        throw new Error('Delete failed: not authorized or employee not found');
-      }
+      await apiClient.delete(`/scheduler/employees/${id}/`);
 
       setEmployees(prev => prev.filter(e => e.id !== id));
       toast.success('Employee deleted successfully');
@@ -498,42 +497,10 @@ export function useEmployees(companyId?: string) {
       fetchEmployees(companyId, false);
     }
     
-    // Set up real-time subscription if we have a valid company ID or fetching all
-    let subscription: ReturnType<typeof supabase.channel> | null = null;
-    
-    if (isValidCompanyId || fetchAll) {
-      const channelName = fetchAll ? 'employees_changes_all' : `employees_changes_${companyId}`;
-      const subscriptionConfig: any = { 
-        event: '*', 
-        schema: 'public', 
-        table: 'employees'
-      };
-      
-      // Only add filter if not fetching all
-      if (!fetchAll && companyId) {
-        subscriptionConfig.filter = `company_id=eq.${companyId}`;
-      }
-      
-      subscription = supabase
-        .channel(channelName)
-        .on('postgres_changes', subscriptionConfig, (payload) => {
-          if (payload.eventType === 'DELETE') {
-            const deletedId = (payload.old as { id?: string })?.id;
-            if (deletedId) {
-              setEmployees(prev => prev.filter(e => e.id !== deletedId));
-            }
-          } else {
-            fetchEmployees(companyId, true);
-          }
-        })
-        .subscribe();
-    }
+    // Real-time subscriptions removed - can be added back with WebSocket support later
 
     return () => {
       isMountedRef.current = false;
-      if (subscription) {
-        subscription.unsubscribe();
-      }
     };
   }, [companyId, isValidCompanyId, fetchAll]);
 
@@ -580,21 +547,16 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
         setLoading(true);
       }
       
-      let query = (supabase as any)
-        .from('shifts')
-        .select('*')
-        .eq('company_id', companyId);
+      const params: any = { company: companyId };
       
       if (weekStart) {
         const computedEnd = weekEnd ? new Date(weekEnd.getTime() + 24 * 60 * 60 * 1000) : (() => { const d = new Date(weekStart); d.setDate(d.getDate() + 7); return d; })();
-        query = query
-          .gte('start_time', weekStart.toISOString())
-          .lt('start_time', computedEnd.toISOString());
+        params.start_date = weekStart.toISOString();
+        params.end_date = computedEnd.toISOString();
       }
       
-      const { data, error } = await query.order('start_time', { ascending: true });
+      const data = await apiClient.get<Shift[]>('/scheduler/shifts/', params);
 
-      if (error) throw error;
       if (isMountedRef.current) {
         setShifts(data || []);
       }
@@ -613,13 +575,29 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
 
   const createShift = async (shiftData: Omit<Shift, 'id' | 'created_at'>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('shifts')
-        .insert([shiftData])
-        .select()
-        .single();
-
-      if (error) throw error;
+      const payload: any = { ...shiftData };
+      if (payload.employee_id) {
+        payload.employee = payload.employee_id;
+        delete payload.employee_id;
+      }
+      if (payload.company_id) {
+        payload.company = payload.company_id;
+        delete payload.company_id;
+      }
+      if (payload.department_id) {
+        payload.department = payload.department_id;
+        delete payload.department_id;
+      }
+      if (payload.team_id) {
+        payload.team = payload.team_id;
+        delete payload.team_id;
+      }
+      if (payload.replacement_employee_id) {
+        payload.replacement_employee = payload.replacement_employee_id;
+        delete payload.replacement_employee_id;
+      }
+      
+      const data = await apiClient.post<Shift>('/scheduler/shifts/', payload);
       
       setShifts(prev => [...prev, data]);
       toast.success('Shift created successfully');
@@ -633,14 +611,29 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
 
   const updateShift = async (id: string, updates: Partial<Shift>) => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('shifts')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
+      const payload: any = { ...updates };
+      if (payload.employee_id !== undefined) {
+        payload.employee = payload.employee_id;
+        delete payload.employee_id;
+      }
+      if (payload.company_id !== undefined) {
+        payload.company = payload.company_id;
+        delete payload.company_id;
+      }
+      if (payload.department_id !== undefined) {
+        payload.department = payload.department_id;
+        delete payload.department_id;
+      }
+      if (payload.team_id !== undefined) {
+        payload.team = payload.team_id;
+        delete payload.team_id;
+      }
+      if (payload.replacement_employee_id !== undefined) {
+        payload.replacement_employee = payload.replacement_employee_id;
+        delete payload.replacement_employee_id;
+      }
+      
+      const data = await apiClient.patch<Shift>(`/scheduler/shifts/${id}/`, payload);
       
       setShifts(prev => prev.map(s => s.id === id ? data : s));
       toast.success('Shift updated successfully');
@@ -654,12 +647,7 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
 
   const deleteShift = async (id: string) => {
     try {
-      const { error } = await (supabase as any)
-        .from('shifts')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await apiClient.delete(`/scheduler/shifts/${id}/`);
       
       setShifts(prev => prev.filter(s => s.id !== id));
       toast.success('Shift deleted successfully');
@@ -674,22 +662,10 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
     isMountedRef.current = true;
     fetchShifts();
     
-    // Set up real-time subscription for shifts
-    const subscription = supabase
-      .channel(`shifts_changes_${companyId || 'all'}`)
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'shifts',
-        filter: companyId ? `company_id=eq.${companyId}` : undefined
-      }, () => {
-        fetchShifts();
-      })
-      .subscribe();
+    // Real-time subscriptions removed - can be added back with WebSocket support later
 
     return () => {
       isMountedRef.current = false;
-      subscription.unsubscribe();
     };
   }, [companyId, weekStartTime, weekEndTime, fetchShifts]);
 

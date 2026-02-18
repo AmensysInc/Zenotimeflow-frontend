@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCompanies, useDepartments, useEmployees, useShifts, Shift, Employee } from "@/hooks/useSchedulerDatabase";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useToast } from "@/hooks/use-toast";
 import { useCompanyEmployeeNames } from "@/hooks/useCompanyEmployeeNames";
 import { useEmployeeAvailability, AvailabilityStatus } from "@/hooks/useEmployeeAvailability";
@@ -156,15 +156,14 @@ export default function SchedulerSchedule() {
 
     let cancelled = false;
     (async () => {
-      const { data, error } = await (supabase as any)
-        .from('employees_public')
-        .select('id, first_name, last_name')
-        .in('id', ids);
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+        id__in: ids.join(',')
+      });
 
-      if (cancelled || error || !Array.isArray(data)) return;
+      if (cancelled || !Array.isArray(employees)) return;
 
       const next: Record<string, string> = {};
-      for (const row of data as any[]) {
+      for (const row of employees) {
         if (!row?.id) continue;
         const first = String(row?.first_name ?? "").trim();
         const last = String(row?.last_name ?? "").trim();
@@ -183,14 +182,10 @@ export default function SchedulerSchedule() {
   // Fetch organizations for super admin
   useEffect(() => {
     const fetchOrganizations = async () => {
-      const { data, error } = await supabase
-        .from('organizations')
-        .select('id, name')
-        .order('name');
-      
-      if (!error && data) {
-        setOrganizations(data);
-      }
+      const organizations = await apiClient.get<any[]>('/scheduler/organizations/');
+      setOrganizations(organizations.sort((a: any, b: any) => 
+        (a.name || '').localeCompare(b.name || '')
+      ));
     };
 
     if (userRole === 'super_admin') {
@@ -203,21 +198,19 @@ export default function SchedulerSchedule() {
     const fetchUserRole = async () => {
       if (!user) return;
       
-      const { data } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id);
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const roleList = roles.map((r: any) => r.role);
       
       let computedRole: string = 'user';
-      if (data && data.length > 0) {
-        const roles = data.map(item => item.role);
-        if (roles.includes('super_admin')) {
+      if (roleList.length > 0) {
+        if (roleList.includes('super_admin')) {
           computedRole = 'super_admin';
-        } else if (roles.includes('operations_manager')) {
+        } else if (roleList.includes('operations_manager')) {
           computedRole = 'operations_manager';
-        } else if (roles.includes('manager')) {
+        } else if (roleList.includes('manager')) {
           computedRole = 'manager';
-        } else if (roles.includes('employee') || roles.includes('house_keeping') || roles.includes('maintenance')) {
+        } else if (roleList.includes('employee') || roleList.includes('house_keeping') || roleList.includes('maintenance')) {
           // All operational staff (employee, house_keeping, maintenance) are treated the same
           computedRole = 'employee';
         } else {
@@ -227,12 +220,9 @@ export default function SchedulerSchedule() {
 
       setUserRole(computedRole);
       
-      // Also check if user is an employee (use maybeSingle to avoid 406 when no record)
-      const { data: empData } = await supabase
-        .from('employees')
-        .select('id, company_id, team_id')
-        .eq('user_id', user.id)
-        .maybeSingle();
+      // Also check if user is an employee
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const empData = employees && employees.length > 0 ? employees[0] : null;
       
       if (empData) {
         setEmployeeRecord(empData);
@@ -263,13 +253,12 @@ export default function SchedulerSchedule() {
     const fetchMyRequests = async () => {
       if (!employeeRecord?.id) return;
       
-      const { data: requests } = await supabase
-        .from('shift_replacement_requests')
-        .select('shift_id')
-        .eq('replacement_employee_id', employeeRecord.id)
-        .eq('status', 'pending');
+      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+        replacement_employee: employeeRecord.id,
+        status: 'pending'
+      });
       
-      setMyPendingRequests(requests?.map(r => r.shift_id) || []);
+      setMyPendingRequests(requests.map((r: any) => r.shift));
     };
 
     fetchMyRequests();
@@ -282,14 +271,13 @@ export default function SchedulerSchedule() {
       
       setLoadingAllEmployees(true);
       try {
-        // Use the new SECURITY DEFINER RPC to get all company employees
-        const { data, error } = await supabase
-          .rpc('get_company_employees_for_schedule', { _company_id: employeeRecord.company_id });
+        // Get all company employees
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+          company: employeeRecord.company_id
+        });
         
-        if (error) throw error;
-        
-        // Map the RPC response to Employee type
-        const mappedEmployees: Employee[] = (data || []).map((e: any) => ({
+        // Map the response to Employee type
+        const mappedEmployees: Employee[] = employees.map((e: any) => ({
           id: e.id,
           first_name: e.first_name || '',
           last_name: e.last_name || '',
@@ -361,37 +349,31 @@ export default function SchedulerSchedule() {
         const now = new Date();
         const graceThreshold = new Date(now.getTime() - GRACE_PERIOD_MINUTES * 60 * 1000);
         
-        const { data: overdueShifts, error: fetchError } = await supabase
-          .from('shifts')
-          .select('id, employee_id, company_id, start_time, created_at')
-          .eq('company_id', selectedCompany)
-          .eq('status', 'scheduled')
-          .eq('is_missed', false)
-          .lt('start_time', graceThreshold.toISOString());
+        const overdueShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+          company: selectedCompany,
+          status: 'scheduled',
+          is_missed: false,
+          start_time__lt: graceThreshold.toISOString()
+        });
         
-        if (fetchError || !overdueShifts || overdueShifts.length === 0) return;
+        if (!overdueShifts || overdueShifts.length === 0) return;
         
         for (const shift of overdueShifts) {
           const shiftStartTime = new Date(shift.start_time);
           const shiftCreatedAt = new Date(shift.created_at);
           if (shiftCreatedAt > shiftStartTime) continue;
           
-          const { data: clockEntry } = await supabase
-            .from('time_clock')
-            .select('id')
-            .eq('shift_id', shift.id)
-            .not('clock_in', 'is', null)
-            .maybeSingle();
+          const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+            shift: shift.id,
+            clock_in__isnull: false
+          });
           
-          if (!clockEntry) {
-            await supabase
-              .from('shifts')
-              .update({ 
-                is_missed: true, 
-                missed_at: now.toISOString(),
-                status: 'missed'
-              })
-              .eq('id', shift.id);
+          if (!clockEntries || clockEntries.length === 0) {
+            await apiClient.patch(`/scheduler/shifts/${shift.id}/`, { 
+              is_missed: true, 
+              missed_at: now.toISOString(),
+              status: 'missed'
+            });
           }
         }
         
@@ -1209,16 +1191,17 @@ export default function SchedulerSchedule() {
       const shiftIds = shifts.map(s => s.id);
       
       // Unlink all time clock entries at once
-      await supabase
-        .from('time_clock')
-        .update({ shift_id: null })
-        .in('shift_id', shiftIds);
+      const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+        shift__in: shiftIds.join(',')
+      });
+      await Promise.all(clockEntries.map((entry: any) => 
+        apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
+      ));
       
       // Delete all shifts at once
-      await supabase
-        .from('shifts')
-        .delete()
-        .in('id', shiftIds);
+      await Promise.all(shiftIds.map((id: string) => 
+        apiClient.delete(`/scheduler/shifts/${id}/`)
+      ));
       
       setShowScheduleShifts(false);
       
@@ -1324,10 +1307,12 @@ export default function SchedulerSchedule() {
 
     try {
       for (const shift of dayShifts) {
-        await supabase
-          .from('time_clock')
-          .update({ shift_id: null })
-          .eq('shift_id', shift.id);
+        const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+          shift: shift.id
+        });
+        await Promise.all(clockEntries.map((entry: any) => 
+          apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
+        ));
         await deleteShift(shift.id);
       }
       

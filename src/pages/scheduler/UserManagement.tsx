@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import {
   Table,
   TableBody,
@@ -74,47 +74,8 @@ export default function SchedulerUserManagement() {
   useEffect(() => {
     if (!isAuthorized) return;
 
-    // Subscribe to employees table changes
-    const employeesSubscription = supabase
-      .channel('user_management_employees')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'employees'
-      }, () => {
-        loadUsers();
-      })
-      .subscribe();
-
-    // Subscribe to profiles table changes
-    const profilesSubscription = supabase
-      .channel('user_management_profiles')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'profiles'
-      }, () => {
-        loadUsers();
-      })
-      .subscribe();
-
-    // Subscribe to user_roles table changes
-    const rolesSubscription = supabase
-      .channel('user_management_roles')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'user_roles'
-      }, () => {
-        loadUsers();
-      })
-      .subscribe();
-
-    return () => {
-      employeesSubscription.unsubscribe();
-      profilesSubscription.unsubscribe();
-      rolesSubscription.unsubscribe();
-    };
+    // Note: Real-time updates will be handled by Django Channels in the future
+    // Removed Supabase real-time subscriptions
   }, [isAuthorized]);
 
   const checkAuthorizationAndLoadUsers = async () => {
@@ -122,12 +83,9 @@ export default function SchedulerUserManagement() {
 
     try {
       // Check if user has scheduler admin rights or is super admin
-      const { data: roles } = await supabase
-        .from('user_roles')
-        .select('role, app_type')
-        .eq('user_id', user.id);
-
-      const hasSchedulerAdmin = roles?.some(r => 
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const hasSchedulerAdmin = roles.some((r: any) => 
         r.role === 'super_admin' || (r.role === 'admin' && r.app_type === 'scheduler')
       ) || false;
 
@@ -154,30 +112,27 @@ export default function SchedulerUserManagement() {
 
   const loadUsers = async () => {
     try {
-      // Get all profiles
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (profilesError) throw profilesError;
+      // Get all users
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const profiles = allUsers.map((u: any) => ({
+        ...u.profile,
+        user_id: u.id,
+        email: u.email
+      })).sort((a: any, b: any) => 
+        new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+      );
 
       // Get all employees with their user_ids (to check if user is linked to scheduler via employees table)
-      const { data: allEmployees } = await supabase
-        .from('employees')
-        .select('user_id, email');
+      const allEmployees = await apiClient.get<any[]>('/scheduler/employees/');
       
       // Create sets for quick lookup
-      const employeeUserIds = new Set(allEmployees?.map(e => e.user_id).filter(Boolean) || []);
-      const employeeEmails = new Set(allEmployees?.map(e => e.email?.toLowerCase()).filter(Boolean) || []);
+      const employeeUserIds = new Set(allEmployees.map((e: any) => e.user).filter(Boolean));
+      const employeeEmails = new Set(allEmployees.map((e: any) => e.email?.toLowerCase()).filter(Boolean));
 
       // Get users with scheduler access
-      const usersWithRoles = await Promise.all(
-        profiles.map(async (profile) => {
-          const { data: rolesData } = await supabase
-            .from('user_roles')
-            .select('role, app_type')
-            .eq('user_id', profile.user_id);
+      const usersWithRoles = profiles.map((profile: any) => {
+        const userData = allUsers.find((u: any) => u.id === profile.user_id);
+        const rolesData = userData?.roles || [];
 
           // Check if user has scheduler access via roles
           const hasSchedulerAccess = rolesData?.some(r => r.app_type === 'scheduler') || false;
@@ -213,12 +168,11 @@ export default function SchedulerUserManagement() {
             highestRole = 'employee';
           }
 
-          return {
-            ...profile,
-            role: highestRole
-          };
-        })
-      );
+        return {
+          ...profile,
+          role: highestRole
+        };
+      });
 
       // Filter out null values (users without scheduler access)
       const schedulerUsers = usersWithRoles.filter(user => user !== null);
@@ -238,13 +192,18 @@ export default function SchedulerUserManagement() {
 
   const updateUserRole = async (userId: string, newRole: 'employee' | 'manager' | 'operations_manager' | 'super_admin') => {
     try {
-      const { error } = await supabase
-        .from('user_roles')
-        .update({ role: newRole })
-        .eq('user_id', userId)
-        .eq('app_type', 'scheduler');
-
-      if (error) throw error;
+      const userData = await apiClient.get<any>(`/auth/users/${userId}/`);
+      const schedulerRole = userData?.roles?.find((r: any) => r.app_type === 'scheduler');
+      
+      if (schedulerRole) {
+        await apiClient.patch(`/auth/user-roles/${schedulerRole.id}/`, { role: newRole });
+      } else {
+        await apiClient.post('/auth/user-roles/', {
+          user: userId,
+          role: newRole,
+          app_type: 'scheduler'
+        });
+      }
 
       toast({
         title: "Success",
@@ -274,20 +233,18 @@ export default function SchedulerUserManagement() {
 
     setIsCreating(true);
     try {
-      // Call the create-user edge function with scheduler app type
-      const { data, error } = await supabase.functions.invoke('create-user', {
-        body: {
+      // Create user via Django API
+      let data;
+      try {
+        data = await apiClient.post('/auth/register/', {
           email: newUser.email,
           full_name: newUser.full_name,
           role: newUser.role,
           password: newUser.password,
           app_type: 'scheduler'
-        }
-      });
-
-      if (error) {
-        console.error('Edge function error:', error);
-        // Try to parse error message from response
+        });
+      } catch (error: any) {
+        console.error('User creation error:', error);
         let errorMessage = "Failed to create user. Please try again.";
         
         if (error.message) {
@@ -338,15 +295,10 @@ export default function SchedulerUserManagement() {
     if (!editingUser) return;
 
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
-          full_name: editingUser.full_name,
-          email: editingUser.email
-        })
-        .eq('user_id', editingUser.user_id);
-
-      if (error) throw error;
+      await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, { 
+        full_name: editingUser.full_name,
+        email: editingUser.email
+      });
 
       toast({
         title: "Success",
@@ -373,12 +325,7 @@ export default function SchedulerUserManagement() {
 
     try {
       // Mark user as deleted in profiles table
-      const { error } = await supabase
-        .from('profiles')
-        .update({ status: 'deleted' })
-        .eq('user_id', userId);
-
-      if (error) throw error;
+      await apiClient.patch(`/auth/profiles/${userId}/`, { status: 'deleted' });
 
       await loadUsers();
 
@@ -402,17 +349,18 @@ export default function SchedulerUserManagement() {
       const tempPassword = Math.random().toString(36).slice(-12);
       
       // Send reinvite email
-      const { error } = await supabase.functions.invoke('send-welcome-email', {
-        body: {
+      // Note: Email sending endpoint needs to be implemented in Django
+      try {
+        await apiClient.post('/auth/send-welcome-email/', {
           email: userEmail,
           full_name: userFullName,
           role: userRole,
           password: tempPassword,
-          isReinvite: true
-        }
-      });
-
-      if (error) throw error;
+          is_reinvite: true
+        });
+      } catch (error: any) {
+        throw error;
+      }
 
       toast({
         title: "Success",

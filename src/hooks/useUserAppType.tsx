@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 
 export type AppType = 'calendar' | 'scheduler';
 
@@ -18,31 +18,28 @@ export const useUserAppType = () => {
 
       try {
         // Get user's roles to determine app access
-        const { data, error } = await supabase
-          .from('user_roles')
-          .select('app_type, role')
-          .eq('user_id', user.id);
+        const userData = await apiClient.getCurrentUser() as any;
+        const roles = userData?.roles || [];
 
-        if (error) {
-          console.error('Error fetching user app type:', error);
-          // Default to showing app selector
-          setAppType(null);
-        } else if (data && data.length > 0) {
+        if (roles.length > 0) {
           // Check if user is admin (gets access to both apps)
-          const isAdmin = data.some(role => role.role === 'admin' || role.role === 'super_admin');
+          const isAdmin = roles.some((role: any) => role.role === 'admin' || role.role === 'super_admin');
           
           if (isAdmin) {
             // Admin gets app selector to choose - always show selector for admins
             setAppType(null);
           } else {
             // Check if regular user has multiple app access
-            const uniqueAppTypes = [...new Set(data.map(role => role.app_type))];
+            const uniqueAppTypes = [...new Set(roles.map((role: any) => role.app_type).filter(Boolean))];
             if (uniqueAppTypes.length > 1) {
               // User has access to multiple apps, show selector
               setAppType(null);
-            } else {
+            } else if (uniqueAppTypes.length === 1) {
               // Regular user gets their single assigned app
-              setAppType(data[0].app_type as AppType);
+              setAppType(uniqueAppTypes[0] as AppType);
+            } else {
+              // No app type specified, show selector
+              setAppType(null);
             }
           }
         } else {

@@ -13,7 +13,7 @@ import { TaskNotes } from "@/components/TaskNotes";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { FileUpload } from "@/components/ui/file-upload";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { format } from "date-fns";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";

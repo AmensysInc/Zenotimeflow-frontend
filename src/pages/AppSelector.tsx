@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Calendar, Users, Clock, BarChart3, ArrowRight } from "lucide-react";
@@ -28,18 +28,11 @@ const AppSelector = () => {
 
       try {
         // Get user role and app type
-        const { data: roles, error } = await supabase
-          .from('user_roles')
-          .select('role, app_type')
-          .eq('user_id', user.id);
+        const userData = await apiClient.getCurrentUser() as any;
+        const roles = userData?.roles || [];
 
-        if (error) {
-          console.error('Error fetching user access:', error);
-          return;
-        }
-
-        const isSuperAdmin = roles?.some(r => r.role === 'super_admin') || false;
-        const hasCalendar = roles?.some(r => r.app_type === 'calendar') || true; // Everyone gets calendar access
+        const isSuperAdmin = roles.some((r: any) => r.role === 'super_admin') || false;
+        const hasCalendar = roles.some((r: any) => r.app_type === 'calendar') || true; // Everyone gets calendar access
         const hasScheduler = isSuperAdmin; // Only super admins get scheduler access
 
         setUserAccess({

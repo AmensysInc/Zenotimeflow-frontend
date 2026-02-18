@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -35,26 +35,22 @@ export function useEmployeeAvailability(companyId?: string, weekStart?: Date) {
     try {
       setLoading(true);
       
-      let query = supabase
-        .from('employee_availability')
-        .select('*')
-        .eq('company_id', companyId);
-
+      const params: any = { company: companyId };
       if (weekStart) {
         const weekEnd = new Date(weekStart);
         weekEnd.setDate(weekEnd.getDate() + 7);
-        query = query
-          .gte('date', weekStart.toISOString().split('T')[0])
-          .lt('date', weekEnd.toISOString().split('T')[0]);
+        params.start_date = weekStart.toISOString().split('T')[0];
+        params.end_date = weekEnd.toISOString().split('T')[0];
       }
 
-      const { data, error } = await query.order('date', { ascending: true });
+      const data = await apiClient.get<EmployeeAvailability[]>('/scheduler/availability/', params);
 
-      if (error) throw error;
       // Cast the status field to our type
       const typedData = (data || []).map(item => ({
         ...item,
-        status: item.status as AvailabilityStatus
+        status: item.status as AvailabilityStatus,
+        employee_id: item.employee || item.employee_id,
+        company_id: item.company || item.company_id
       }));
       setAvailability(typedData);
     } catch (error) {
@@ -75,27 +71,31 @@ export function useEmployeeAvailability(companyId?: string, weekStart?: Date) {
     try {
       const dateStr = date.toISOString().split('T')[0];
       
-      // Upsert - insert or update on conflict
-      const { data, error } = await supabase
-        .from('employee_availability')
-        .upsert({
-          employee_id: employeeId,
-          company_id: companyId,
+      // Check if exists first, then update or create
+      const existing = availability.find(a => a.employee_id === employeeId && a.date === dateStr);
+      
+      let data: EmployeeAvailability;
+      if (existing) {
+        data = await apiClient.patch<EmployeeAvailability>(`/scheduler/availability/${existing.id}/`, {
+          status,
+          notes
+        });
+      } else {
+        data = await apiClient.post<EmployeeAvailability>('/scheduler/availability/', {
+          employee: employeeId,
+          company: companyId,
           date: dateStr,
           status,
           notes
-        }, {
-          onConflict: 'employee_id,date'
-        })
-        .select()
-        .single();
+        });
+      }
 
-      if (error) throw error;
-
-      // Cast the status field
+      // Cast the status field and normalize field names
       const typedData: EmployeeAvailability = {
         ...data,
-        status: data.status as AvailabilityStatus
+        status: data.status as AvailabilityStatus,
+        employee_id: data.employee || data.employee_id,
+        company_id: data.company || data.company_id
       };
 
       setAvailability(prev => {

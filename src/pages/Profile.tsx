@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { User, Mail, Calendar, Save } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useToast } from "@/hooks/use-toast";
 
 interface Profile {
@@ -33,24 +33,25 @@ const Profile = () => {
   }, [user]);
 
   const fetchProfile = async () => {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("user_id", user?.id)
-      .single();
-
-    if (error) {
+    try {
+      const userData = await apiClient.getCurrentUser() as any;
+      const profileData = userData?.profile || {};
+      
+      setProfile({
+        id: profileData.id || userData.id,
+        user_id: userData.id,
+        full_name: profileData.full_name || null,
+        email: userData.email,
+        avatar_url: profileData.avatar_url || null,
+        created_at: profileData.created_at || new Date().toISOString()
+      });
+      setFullName(profileData.full_name || "");
+    } catch (error: any) {
       toast({
         title: "Error fetching profile",
-        description: error.message,
+        description: error.message || "Failed to fetch profile",
         variant: "destructive",
       });
-    } else {
-      setProfile({
-        ...data,
-        avatar_url: null // Set default value since it's a new column
-      });
-      setFullName(data.full_name || "");
     }
     setIsLoading(false);
   };
@@ -59,23 +60,20 @@ const Profile = () => {
     if (!profile) return;
     
     setIsSaving(true);
-    const { error } = await supabase
-      .from("profiles")
-      .update({ full_name: fullName || null })
-      .eq("user_id", user?.id);
-
-    if (error) {
-      toast({
-        title: "Error updating profile",
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
+    try {
+      await apiClient.patch('/auth/profile/', { full_name: fullName || null });
+      
       toast({
         title: "Profile updated",
         description: "Your profile has been updated successfully",
       });
       fetchProfile();
+    } catch (error: any) {
+      toast({
+        title: "Error updating profile",
+        description: error.message || "Failed to update profile",
+        variant: "destructive",
+      });
     }
     setIsSaving(false);
   };

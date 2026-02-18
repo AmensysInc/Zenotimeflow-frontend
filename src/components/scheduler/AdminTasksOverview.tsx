@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { format, parseISO, isPast, isToday } from "date-fns";
 
 interface AdminTasksOverviewProps {
@@ -31,11 +31,10 @@ export default function AdminTasksOverview({ companyId }: AdminTasksOverviewProp
     const fetchEmployees = async () => {
       if (!companyId) return;
       
-      const { data } = await supabase
-        .from('employees')
-        .select('id, user_id, first_name, last_name')
-        .eq('company_id', companyId)
-        .eq('status', 'active');
+      const data = await apiClient.get<any[]>('/scheduler/employees/', {
+        company: companyId,
+        status: 'active'
+      });
       
       setEmployees(data || []);
     };
@@ -58,26 +57,23 @@ export default function AdminTasksOverview({ companyId }: AdminTasksOverviewProp
         return;
       }
       
-      let query = supabase
-        .from('calendar_events')
-        .select('*')
-        .in('user_id', userIds)
-        .eq('event_type', 'task')
-        .order('start_time', { ascending: true });
+      const tasks = await apiClient.get<any[]>('/calendar/events/', {
+        user__in: userIds.join(','),
+        event_type: 'task'
+      });
       
-      const { data, error } = await query;
-      
-      if (!error) {
-        // Enrich with employee data
-        const enrichedTasks = (data || []).map((task: any) => {
-          const employee = employees.find(e => e.user_id === task.user_id);
-          return {
-            ...task,
-            employee_name: employee 
-              ? `${employee.first_name} ${employee.last_name}`
-              : 'Unknown',
-          };
-        });
+      // Enrich with employee data
+      const enrichedTasks = tasks.map((task: any) => {
+        const employee = employees.find((e: any) => e.user_id === task.user);
+        return {
+          ...task,
+          employee_name: employee 
+            ? `${employee.first_name} ${employee.last_name}`
+            : 'Unknown',
+        };
+      }).sort((a: any, b: any) => 
+        new Date(a.start_time || 0).getTime() - new Date(b.start_time || 0).getTime()
+      );
         setTasks(enrichedTasks);
       }
       setLoading(false);

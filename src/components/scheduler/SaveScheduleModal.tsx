@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -82,12 +82,11 @@ export default function SaveScheduleModal({
 
         // Check if there's already a schedule for this week
         const weekStartStr = weekStart.toISOString();
-        const { data: existingSchedules } = await supabase
-          .from('schedule_templates')
-          .select('id, name, description, template_data')
-          .eq('company_id', companyId);
+        const existingSchedules = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+          company: companyId
+        });
 
-        const matchingSchedule = existingSchedules?.find(schedule => {
+        const matchingSchedule = existingSchedules.find((schedule: any) => {
           const scheduleData = typeof schedule.template_data === 'string' 
             ? JSON.parse(schedule.template_data) 
             : schedule.template_data;
@@ -143,15 +142,12 @@ export default function SaveScheduleModal({
 
       // Check for existing schedule with same week_start for this company (to prevent duplicates)
       const weekStartStr = weekStart.toISOString();
-      const { data: existingSchedules, error: existingSchedulesError } = await supabase
-        .from('schedule_templates')
-        .select('id, name, template_data')
-        .eq('company_id', companyId);
-
-      if (existingSchedulesError) throw existingSchedulesError;
+      const existingSchedules = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+        company: companyId
+      });
       
       // Find if there's already a schedule for this week
-      const duplicateSchedule = existingSchedules?.find(schedule => {
+      const duplicateSchedule = existingSchedules.find((schedule: any) => {
         const scheduleData = typeof schedule.template_data === 'string' 
           ? JSON.parse(schedule.template_data) 
           : schedule.template_data;
@@ -160,17 +156,11 @@ export default function SaveScheduleModal({
 
       if (existingTemplate) {
         // Update existing template
-        const { error } = await supabase
-          .from('schedule_templates')
-          .update({
-            name: name.trim(),
-            description: description.trim() || null,
-            template_data: templateData,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', existingTemplate.id);
-
-        if (error) throw error;
+        await apiClient.patch(`/scheduler/schedule-templates/${existingTemplate.id}/`, {
+          name: name.trim(),
+          description: description.trim() || null,
+          template_data: templateData,
+        });
         
         toast({
           title: "Schedule Updated",
@@ -178,17 +168,11 @@ export default function SaveScheduleModal({
         });
       } else if (duplicateSchedule) {
         // Update the existing schedule for this week instead of creating a duplicate
-        const { error } = await supabase
-          .from('schedule_templates')
-          .update({
-            name: name.trim(),
-            description: description.trim() || null,
-            template_data: templateData,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', duplicateSchedule.id);
-
-        if (error) throw error;
+        await apiClient.patch(`/scheduler/schedule-templates/${duplicateSchedule.id}/`, {
+          name: name.trim(),
+          description: description.trim() || null,
+          template_data: templateData,
+        });
         
         toast({
           title: "Schedule Updated",
@@ -196,17 +180,13 @@ export default function SaveScheduleModal({
         });
       } else {
         // Create new template
-        const { error } = await supabase
-          .from('schedule_templates')
-          .insert([{
-            name: name.trim(),
-            description: description.trim() || null,
-            template_data: templateData,
-            company_id: companyId,
-            created_by: user.id
-          }]);
-
-        if (error) throw error;
+        await apiClient.post('/scheduler/schedule-templates/', {
+          name: name.trim(),
+          description: description.trim() || null,
+          template_data: templateData,
+          company: companyId,
+          created_by: user.id
+        });
         
         toast({
           title: "Schedule Saved",

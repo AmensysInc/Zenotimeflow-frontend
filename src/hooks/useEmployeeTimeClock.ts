@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -45,14 +45,13 @@ export function useEmployeeTimeClock() {
     const checkRole = async () => {
       if (!user) return;
       
-      const { data } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id);
-      
-      if (data) {
-        const roles = data.map(r => r.role);
-        setIsAdmin(roles.includes('super_admin') || roles.includes('admin') || roles.includes('operations_manager') || roles.includes('manager'));
+      try {
+        const userData = await apiClient.getCurrentUser() as any;
+        const roles = userData?.roles || [];
+        const roleNames = roles.map((r: any) => r.role);
+        setIsAdmin(roleNames.includes('super_admin') || roleNames.includes('admin') || roleNames.includes('operations_manager') || roleNames.includes('manager'));
+      } catch (error) {
+        console.error('Error checking role:', error);
       }
     };
     
@@ -64,20 +63,21 @@ export function useEmployeeTimeClock() {
     const fetchEmployee = async () => {
       if (!user) return;
       
-      const { data, error } = await supabase
-        .from('employees')
-        .select('*')
-        .eq('user_id', user.id)
-        .single();
-      
-      if (error) {
-        // User might not be an employee
+      try {
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+        const employee = employees?.[0];
+        
+        if (!employee) {
+          console.log('No employee record found for user');
+          setLoading(false);
+          return;
+        }
+        
+        setEmployee(employee as EmployeeRecord);
+      } catch (error) {
         console.log('No employee record found for user');
         setLoading(false);
-        return;
       }
-      
-      setEmployee(data as EmployeeRecord);
     };
     
     fetchEmployee();
@@ -91,14 +91,9 @@ export function useEmployeeTimeClock() {
     }
     
     try {
-      const { data, error } = await supabase
-        .from('time_clock')
-        .select('*')
-        .eq('employee_id', employee.id)
-        .order('created_at', { ascending: false })
-        .limit(50);
-      
-      if (error) throw error;
+      const data = await apiClient.get<TimeClockEntry[]>('/scheduler/time-clock/', {
+        employee: employee.id
+      });
       
       setEntries(data || []);
       
@@ -156,25 +151,23 @@ export function useEmployeeTimeClock() {
         toast.warning('Clocking in without location');
       }
       
-      const { data, error } = await supabase
-        .from('time_clock')
-        .insert([{
-          employee_id: employee.id,
-          shift_id: shiftId,
-          clock_in: new Date().toISOString(),
-        }])
-        .select()
-        .single();
+      const data = await apiClient.post<TimeClockEntry>('/scheduler/time-clock/clock_in/', {
+        employee_id: employee.id,
+        shift_id: shiftId
+      });
       
-      if (error) throw error;
-      
-      // Log location separately if captured
+      // Log location separately if captured (if location_logs endpoint exists)
+      // Note: This might need to be implemented in Django backend
       if (location && user) {
-        await supabase.from('location_logs').insert([{
-          user_id: user.id,
-          location_address: `Clock In - Lat: ${location.lat}, Lng: ${location.lng}`,
-          coordinates: location,
-        }]);
+        try {
+          await apiClient.post('/scheduler/location-logs/', {
+            user: user.id,
+            location_address: `Clock In - Lat: ${location.lat}, Lng: ${location.lng}`,
+            coordinates: location,
+          });
+        } catch (error) {
+          console.warn('Could not log location:', error);
+        }
       }
       
       setActiveEntry(data);
@@ -223,26 +216,19 @@ export function useEmployeeTimeClock() {
       const totalHours = Math.round((totalMinutes / 60) * 100) / 100;
       const overtimeHours = totalHours > 8 ? Math.round((totalHours - 8) * 100) / 100 : 0;
       
-      const { data, error } = await supabase
-        .from('time_clock')
-        .update({
-          clock_out: clockOutTime.toISOString(),
-          total_hours: totalHours,
-          overtime_hours: overtimeHours,
-        })
-        .eq('id', activeEntry.id)
-        .select()
-        .single();
-      
-      if (error) throw error;
+      const data = await apiClient.post<TimeClockEntry>('/scheduler/time-clock/clock_out/', {
+        employee_id: employee.id,
+        time_clock_id: activeEntry.id
+      });
       
       // Log location if captured
+      // Note: Location logging endpoint needs to be implemented in Django
       if (location && user) {
-        await supabase.from('location_logs').insert([{
-          user_id: user.id,
-          location_address: `Clock Out - Lat: ${location.lat}, Lng: ${location.lng}`,
-          coordinates: location,
-        }]);
+        // await apiClient.post('/scheduler/location-logs/', {
+        //   user: user.id,
+        //   location_address: `Clock Out - Lat: ${location.lat}, Lng: ${location.lng}`,
+        //   coordinates: location,
+        // });
       }
       
       setActiveEntry(null);
@@ -262,14 +248,7 @@ export function useEmployeeTimeClock() {
     if (!activeEntry) return;
     
     try {
-      const { data, error } = await supabase
-        .from('time_clock')
-        .update({ break_start: new Date().toISOString() })
-        .eq('id', activeEntry.id)
-        .select()
-        .single();
-      
-      if (error) throw error;
+      const data = await apiClient.post<TimeClockEntry>(`/scheduler/time-clock/${activeEntry.id}/start_break/`, {});
       
       setActiveEntry(data);
       setEntries(prev => prev.map(e => e.id === data.id ? data : e));
@@ -285,14 +264,7 @@ export function useEmployeeTimeClock() {
     if (!activeEntry) return;
     
     try {
-      const { data, error } = await supabase
-        .from('time_clock')
-        .update({ break_end: new Date().toISOString() })
-        .eq('id', activeEntry.id)
-        .select()
-        .single();
-      
-      if (error) throw error;
+      const data = await apiClient.post<TimeClockEntry>(`/scheduler/time-clock/${activeEntry.id}/end_break/`, {});
       
       setActiveEntry(data);
       setEntries(prev => prev.map(e => e.id === data.id ? data : e));
@@ -335,35 +307,24 @@ export function useAdminTimeClock(companyId?: string, dateRange?: { start: Date;
     }
     
     try {
-      let query = supabase
-        .from('time_clock')
-        .select(`
-          *,
-          employees!inner(
-            id,
-            first_name,
-            last_name,
-            email,
-            company_id,
-            department_id,
-            position,
-            hourly_rate
-          )
-        `)
-        .eq('employees.company_id', companyId)
-        .order('created_at', { ascending: false });
-      
+      const params: any = {};
       if (dateRange) {
-        query = query
-          .gte('clock_in', dateRange.start.toISOString())
-          .lte('clock_in', dateRange.end.toISOString());
+        params.start_date = dateRange.start.toISOString();
+        params.end_date = dateRange.end.toISOString();
       }
       
-      const { data, error } = await query.limit(500);
+      // Get employees for the company first, then get their time clock entries
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId });
+      const employeeIds = employees.map(e => e.id);
       
-      if (error) throw error;
+      // Fetch time clock entries for all employees
+      const allEntries: any[] = [];
+      for (const empId of employeeIds) {
+        const entries = await apiClient.get<any[]>('/scheduler/time-clock/', { employee: empId, ...params });
+        allEntries.push(...entries);
+      }
       
-      setEntries(data || []);
+      setEntries(allEntries);
     } catch (error) {
       console.error('Error fetching all time entries:', error);
     } finally {

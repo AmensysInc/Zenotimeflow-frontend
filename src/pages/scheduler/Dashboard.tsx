@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useNavigate } from "react-router-dom";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -37,10 +37,7 @@ export default function SchedulerDashboard() {
 
   const loadCompanies = async () => {
     try {
-      const { data } = await (supabase as any)
-        .from('companies')
-        .select('id, name, type')
-        .order('name');
+      const data = await apiClient.get<any[]>('/scheduler/companies/');
       
       setCompanies(data || []);
       
@@ -57,11 +54,7 @@ export default function SchedulerDashboard() {
     if (!selectedCompany) return;
     
     try {
-      const { data } = await (supabase as any)
-        .from('departments')
-        .select('id, name')
-        .eq('company_id', selectedCompany)
-        .order('name');
+      const data = await apiClient.get<any[]>('/scheduler/departments/', { company: selectedCompany });
       
       setLocations(data || []);
       
@@ -78,35 +71,23 @@ export default function SchedulerDashboard() {
     setLoading(true);
     try {
       // Get total employees count for selected company
-      let employeeQuery = (supabase as any)
-        .from('employees')
-        .select('*', { count: 'exact', head: true })
-        .eq('company_id', selectedCompany);
-
+      const params: any = { company: selectedCompany };
       if (selectedLocation && selectedLocation !== "all") {
-        employeeQuery = employeeQuery.eq('department_id', selectedLocation);
+        params.department = selectedLocation;
       }
 
-      const { count: employeeCount } = await employeeQuery;
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', params);
+      const employeeCount = employees.length;
 
       // Get today's shifts for selected company
       const today = new Date().toISOString().split('T')[0];
-      let shiftsQuery = (supabase as any)
-        .from('shifts')
-        .select(`
-          *,
-          employees!inner(first_name, last_name, company_id, department_id),
-          departments(name)
-        `)
-        .eq('employees.company_id', selectedCompany)
-        .gte('start_time', `${today}T00:00:00.000Z`)
-        .lt('start_time', `${today}T23:59:59.999Z`);
+      const shiftsParams: any = {
+        company: selectedCompany,
+        start_date: `${today}T00:00:00.000Z`,
+        end_date: `${today}T23:59:59.999Z`
+      };
 
-      if (selectedLocation && selectedLocation !== "all") {
-        shiftsQuery = shiftsQuery.eq('employees.department_id', selectedLocation);
-      }
-
-      const { data: shifts } = await shiftsQuery;
+      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', shiftsParams);
 
       // Calculate active shifts and total hours
       const now = new Date();
@@ -133,8 +114,8 @@ export default function SchedulerDashboard() {
       // Format today's shifts for display
       const formattedShifts = shifts?.slice(0, 5).map(shift => ({
         id: shift.id,
-        employee: `${shift.employees?.first_name} ${shift.employees?.last_name}`,
-        department: shift.departments?.name || 'Unassigned',
+        employee: `${shift.employee_first_name || ''} ${shift.employee_last_name || ''}`.trim() || 'Unknown',
+        department: shift.department_name || 'Unassigned',
         time: `${new Date(shift.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${new Date(shift.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
         status: activeShifts.find(active => active.id === shift.id) ? 'in_progress' : 'scheduled'
       })) || [];

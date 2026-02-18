@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { toast } from "sonner";
 import { UserCheck, User } from "lucide-react";
 
@@ -39,39 +39,23 @@ export default function AssignManagerModal({
 
   const fetchAvailableUsers = async () => {
     try {
-      // First get users with manager role
-      const { data: managerRoles, error: rolesError } = await supabase
-        .from('user_roles')
-        .select('user_id')
-        .eq('role', 'manager');
+      // Get all users with manager role
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const managerUsers = allUsers.filter((u: any) => {
+        const roles = u.roles || [];
+        const isManager = roles.some((r: any) => r.role === 'manager');
+        const isActive = u.profile?.status === 'active' || !u.profile?.status;
+        const notCreatedBy = !company?.created_by || u.id !== company.created_by;
+        return isManager && isActive && notCreatedBy;
+      });
 
-      if (rolesError) throw rolesError;
+      const profiles = managerUsers.map((u: any) => ({
+        user_id: u.id,
+        full_name: u.profile?.full_name || u.email || '',
+        email: u.email || ''
+      })).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-      const managerUserIds = managerRoles?.map(r => r.user_id) || [];
-
-      if (managerUserIds.length === 0) {
-        setAvailableUsers([]);
-        return;
-      }
-
-      // Then get profiles for those managers
-      let profilesQuery = supabase
-        .from('profiles')
-        .select('user_id, full_name, email')
-        .in('user_id', managerUserIds)
-        .or('status.eq.active,status.is.null')
-        .order('full_name');
-
-      // Only apply this filter if we actually have a UUID; passing "" breaks Postgres uuid casting.
-      if (company?.created_by) {
-        profilesQuery = profilesQuery.neq('user_id', company.created_by);
-      }
-
-      const { data: profiles, error: profilesError } = await profilesQuery;
-
-      if (profilesError) throw profilesError;
-
-      setAvailableUsers(profiles || []);
+      setAvailableUsers(profiles);
     } catch (error) {
       console.error('Error fetching managers:', error);
       const message = (error as any)?.message;
@@ -94,15 +78,10 @@ export default function AssignManagerModal({
       }
 
       if (Object.keys(updates).length > 0) {
-        const { data: updated, error } = await supabase
-          .from('companies')
-          .update(updates)
-          .eq('id', company.id)
-          .select('id, company_manager_id');
-
-        if (error) throw error;
-        if (!updated || updated.length === 0) {
-          throw new Error('Company update was blocked (no rows updated). Check permissions/RLS.');
+        const updated = await apiClient.patch(`/scheduler/companies/${company.id}/`, updates);
+        
+        if (!updated) {
+          throw new Error('Company update was blocked (no rows updated). Check permissions.');
         }
       }
 

@@ -16,7 +16,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 
 import {
   Sidebar,
@@ -54,23 +54,20 @@ export function AppSidebar() {
       if (!user) return;
       
       // Fetch user roles
-      const { data: rolesData } = await supabase
-        .from('user_roles')
-        .select('role, app_type')
-        .eq('user_id', user.id);
+      const userData = await apiClient.getCurrentUser() as any;
+      const rolesData = userData?.roles || [];
       
       // Check if user has employee record
-      const { data: employeeData } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
-      
-      setIsEmployeeLinked(!!employeeData);
+      try {
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+        setIsEmployeeLinked(employees && employees.length > 0);
+      } catch {
+        setIsEmployeeLinked(false);
+      }
       
       if (rolesData && rolesData.length > 0) {
-        const roles = rolesData.map(item => item.role as UserRole);
-        const appTypes = rolesData.map(item => item.app_type);
+        const roles = rolesData.map((item: any) => item.role as UserRole);
+        const appTypes = rolesData.map((item: any) => item.app_type);
         
         // Determine primary role
         if (roles.includes('super_admin')) {

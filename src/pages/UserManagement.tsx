@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import {
   Table,
   TableBody,
@@ -107,12 +107,7 @@ export default function UserManagement() {
       });
 
       // Add employees from employees table
-      const { data: employees, error: employeesError } = await supabase
-        .from('employees')
-        .select('user_id')
-        .eq('status', 'active');
-
-      if (employeesError) throw employeesError;
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { status: 'active' });
 
       employees?.forEach(employee => {
         if (employee.user_id) {
@@ -159,47 +154,8 @@ export default function UserManagement() {
     loadCompanies();
     loadOrganizations();
 
-    // Set up real-time subscriptions for auto-updates
-    const profilesSubscription = supabase
-      .channel('user_management_profiles')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'profiles'
-      }, () => {
-        loadUsers();
-      })
-      .subscribe();
-
-    const rolesSubscription = supabase
-      .channel('user_management_roles')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'user_roles'
-      }, () => {
-        loadUsers();
-        loadManagers();
-        loadOperationsManagers();
-      })
-      .subscribe();
-
-    const employeesSubscription = supabase
-      .channel('user_management_employees')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'employees'
-      }, () => {
-        loadUsers();
-      })
-      .subscribe();
-
-    return () => {
-      profilesSubscription.unsubscribe();
-      rolesSubscription.unsubscribe();
-      employeesSubscription.unsubscribe();
-    };
+    // Note: Real-time updates will be handled by Django Channels in the future
+    // Removed Supabase real-time subscriptions
   }, [user]);
 
   const checkAuthorizationAndLoadUsers = async () => {
@@ -207,12 +163,9 @@ export default function UserManagement() {
 
     try {
       // Check if user is super admin
-      const { data: roles } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id);
-
-      const isSuperAdmin = roles?.some(r => r.role === 'super_admin') || false;
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const isSuperAdmin = roles.some((r: any) => r.role === 'super_admin') || false;
       const isRamaAdmin = user.email === 'rama.k@amensys.com';
       
       if (isSuperAdmin || isRamaAdmin) {
@@ -239,27 +192,19 @@ export default function UserManagement() {
   const loadUsers = async () => {
     try {
       // Get all profiles EXCEPT deleted ones
-      const { data: profiles, error: profilesError } = await supabase
-        .from('profiles')
-        .select(`
-          *,
-          manager:manager_id (
-            user_id,
-            full_name
-          )
-        `)
-        .neq('status', 'deleted') // Filter out deleted users
-        .order('created_at', { ascending: false });
-
-      if (profilesError) throw profilesError;
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const profiles = allUsers
+        .filter((u: any) => u.profile?.status !== 'deleted')
+        .map((u: any) => ({
+          ...u.profile,
+          user_id: u.id,
+          email: u.email,
+          manager: u.profile?.manager_id ? { user_id: u.profile.manager_id, full_name: u.profile.manager_name } : null
+        }))
+        .sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
 
       // Load all employee records (including those created by org managers/managers)
-      const { data: employeeRows, error: employeesError } = await supabase
-        .from('employees')
-        .select('id, user_id, email, first_name, last_name, status, created_at')
-        .eq('status', 'active');
-
-      if (employeesError) throw employeesError;
+      const employeeRows = await apiClient.get<any[]>('/scheduler/employees/', { status: 'active' });
 
       const employeeUserIds = new Set(
         (employeeRows ?? []).map((e) => e.user_id).filter(Boolean) as string[]
@@ -275,13 +220,10 @@ export default function UserManagement() {
         (employeeRows ?? []).map((e) => [e.email?.toLowerCase(), e])
       );
 
-      // Then get roles for each profile
-      const usersWithRoles = await Promise.all(
-        profiles.map(async (profile) => {
-          const { data: rolesData } = await supabase
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', profile.user_id);
+      // Get all users with their roles (roles are included in the user response)
+      const usersWithRoles = profiles.map((profile: any) => {
+        const userData = allUsers.find((u: any) => u.id === profile.user_id);
+        const rolesData = userData?.roles || [];
 
           const isEmployee =
             employeeUserIds.has(profile.user_id) ||
@@ -309,13 +251,12 @@ export default function UserManagement() {
             highestRole = 'employee';
           }
 
-          return {
-            ...profile,
-            role: highestRole,
-            manager_name: profile.manager?.full_name || null
-          };
-        })
-      );
+        return {
+          ...profile,
+          role: highestRole,
+          manager_name: profile.manager?.full_name || null
+        };
+      });
 
       // Find employees that don't have profiles yet (created by org managers/managers without auth accounts)
       const profileEmails = new Set(
@@ -364,25 +305,21 @@ export default function UserManagement() {
   const loadManagers = async () => {
     try {
       // Get all users with admin role (potential managers)
-      const { data: adminRoles } = await supabase
-        .from('user_roles')
-        .select('user_id')
-        .eq('role', 'admin');
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const adminUsers = allUsers.filter((u: any) => {
+        const roles = u.roles || [];
+        return roles.some((r: any) => r.role === 'admin') && 
+               (u.profile?.status === 'active' || !u.profile?.status);
+      });
 
-      if (adminRoles && adminRoles.length > 0) {
-        const { data: adminProfiles } = await supabase
-          .from('profiles')
-          .select('*')
-          .in('user_id', adminRoles.map(r => r.user_id))
-          .eq('status', 'active');
+      const adminProfiles = adminUsers.map((u: any) => ({
+        ...u.profile,
+        user_id: u.id,
+        email: u.email,
+        role: 'admin'
+      }));
 
-        if (adminProfiles) {
-          setManagers(adminProfiles.map(profile => ({
-            ...profile,
-            role: 'admin'
-          })));
-        }
-      }
+      setManagers(adminProfiles);
     } catch (error) {
       console.error('Error loading managers:', error);
     }
@@ -391,32 +328,26 @@ export default function UserManagement() {
   const loadOperationsManagers = async () => {
     try {
       // Get all users with operations_manager role
-      const { data: opsManagerRoles } = await supabase
-        .from('user_roles')
-        .select('user_id, app_type')
-        .eq('role', 'operations_manager');
+      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const opsManagerUsers = allUsers.filter((u: any) => {
+        const roles = u.roles || [];
+        return roles.some((r: any) => r.role === 'operations_manager') && 
+               (u.profile?.status === 'active' || !u.profile?.status);
+      });
 
-      if (opsManagerRoles && opsManagerRoles.length > 0) {
-        const { data: opsManagerProfiles } = await supabase
-          .from('profiles')
-          .select('*')
-          .in('user_id', opsManagerRoles.map(r => r.user_id))
-          .eq('status', 'active');
-
-        if (opsManagerProfiles) {
-          // Map profiles with their app_type (field_type)
-          const profilesWithFieldType = opsManagerProfiles.map(profile => {
-            const roleData = opsManagerRoles.find(r => r.user_id === profile.user_id);
-            const fieldType = roleData?.app_type === 'calendar' ? 'IT' : 'Non-IT';
-            return {
-              ...profile,
-              role: 'operations_manager',
-              field_type: fieldType as 'IT' | 'Non-IT'
-            };
-          });
-          setOperationsManagers(profilesWithFieldType);
-        }
-      }
+      // Map profiles with their app_type (field_type)
+      const profilesWithFieldType = opsManagerUsers.map((u: any) => {
+        const roleData = u.roles?.find((r: any) => r.role === 'operations_manager');
+        const fieldType = roleData?.app_type === 'calendar' ? 'IT' : 'Non-IT';
+        return {
+          ...u.profile,
+          user_id: u.id,
+          email: u.email,
+          role: 'operations_manager',
+          field_type: fieldType as 'IT' | 'Non-IT'
+        };
+      });
+      setOperationsManagers(profilesWithFieldType);
     } catch (error) {
       console.error('Error loading operations managers:', error);
     }
@@ -424,13 +355,8 @@ export default function UserManagement() {
 
   const loadCompanies = async () => {
     try {
-      const { data, error } = await supabase
-        .from('companies')
-        .select('*')
-        .order('name');
-
-      if (error) throw error;
-      setCompanies(data || []);
+      const companies = await apiClient.get<any[]>('/scheduler/companies/');
+      setCompanies(companies.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
     } catch (error) {
       console.error('Error loading companies:', error);
     }
@@ -438,13 +364,8 @@ export default function UserManagement() {
 
   const loadOrganizations = async () => {
     try {
-      const { data, error } = await (supabase as any)
-        .from('organizations')
-        .select('*')
-        .order('name');
-
-      if (error) throw error;
-      setOrganizations(data || []);
+      const organizations = await apiClient.get<any[]>('/scheduler/organizations/');
+      setOrganizations(organizations.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
     } catch (error) {
       console.error('Error loading organizations:', error);
     }
@@ -452,33 +373,30 @@ export default function UserManagement() {
 
   const updateUserRole = async (userId: string, newRole: 'employee' | 'manager' | 'operations_manager' | 'super_admin') => {
     try {
-      // First check if user already has a role entry
-      const { data: existingRoles, error: checkError } = await supabase
-        .from('user_roles')
-        .select('id, role')
-        .eq('user_id', userId);
+      // Get existing user roles
+      const userData = await apiClient.get<any>(`/auth/users/${userId}/`);
+      const existingRoles = userData?.roles || [];
 
-      if (checkError) throw checkError;
-
-      if (existingRoles && existingRoles.length > 0) {
-        // Update existing role
-        const { error: updateError } = await supabase
-          .from('user_roles')
-          .update({ role: newRole })
-          .eq('user_id', userId);
-
-        if (updateError) throw updateError;
-      } else {
-        // Insert new role if none exists
-        const { error: insertError } = await supabase
-          .from('user_roles')
-          .insert({
-            user_id: userId,
+      if (existingRoles.length > 0) {
+        // Update existing role - find the scheduler role and update it
+        const schedulerRole = existingRoles.find((r: any) => r.app_type === 'scheduler');
+        if (schedulerRole) {
+          await apiClient.patch(`/auth/user-roles/${schedulerRole.id}/`, { role: newRole });
+        } else {
+          // Insert new role if none exists for scheduler
+          await apiClient.post('/auth/user-roles/', {
+            user: userId,
             role: newRole,
             app_type: 'scheduler'
           });
-
-        if (insertError) throw insertError;
+        }
+      } else {
+        // Insert new role if none exists
+        await apiClient.post('/auth/user-roles/', {
+          user: userId,
+          role: newRole,
+          app_type: 'scheduler'
+        });
       }
 
       toast({
@@ -510,40 +428,35 @@ export default function UserManagement() {
     setIsCreating(true);
     try {
       // First check if user already exists (including deleted ones)
-      const { data: existingProfile, error: checkError } = await supabase
-        .from('profiles')
-        .select('user_id, status')
-        .eq('email', newUser.email)
-        .single();
-
-      if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows found
-        throw checkError;
+      let existingProfile;
+      try {
+        const users = await apiClient.get<any[]>('/auth/users/', { email: newUser.email });
+        existingProfile = users && users.length > 0 ? users[0] : null;
+      } catch (checkError: any) {
+        // If error is 404, user doesn't exist - that's fine
+        if (checkError.status !== 404) {
+          throw checkError;
+        }
       }
 
       if (existingProfile) {
-        if (existingProfile.status === 'deleted') {
+        if (existingProfile.profile?.status === 'deleted') {
           // Reactivate the deleted user instead of creating duplicate
-          const { error: reactivateError } = await supabase
-            .from('profiles')
-            .update({ 
+          try {
+            await apiClient.patch(`/auth/profiles/${existingProfile.id}/`, { 
               status: 'active',
               full_name: newUser.full_name,
-              updated_at: new Date().toISOString()
-            })
-            .eq('user_id', existingProfile.user_id);
+            });
 
-          if (reactivateError) throw reactivateError;
-
-          // Add the new role
-          const { error: roleError } = await supabase
-            .from('user_roles')
-            .insert({
-              user_id: existingProfile.user_id,
+            // Add the new role
+            await apiClient.post('/auth/user-roles/', {
+              user: existingProfile.id,
               role: newUser.role,
               app_type: 'scheduler'
             });
-
-          if (roleError) throw roleError;
+          } catch (error: any) {
+            throw error;
+          }
 
           toast({
             title: "Success",
@@ -561,8 +474,9 @@ export default function UserManagement() {
         }
       } else {
         // Create completely new user
-        const { data, error } = await supabase.functions.invoke('create-user', {
-          body: {
+        let data;
+        try {
+          data = await apiClient.post('/auth/register/', {
             email: newUser.email,
             full_name: newUser.full_name,
             role: newUser.role,
@@ -570,33 +484,32 @@ export default function UserManagement() {
             employee_pin: newUser.employee_pin || null,
             app_type: 'scheduler',
             manager_id: newUser.manager_id && newUser.manager_id !== "none" ? newUser.manager_id : null
-          }
-        });
-
-        if (error) {
-          console.error('Edge function error:', error);
+          });
+        } catch (error: any) {
+          console.error('User creation error:', error);
           throw error;
         }
 
         console.log('User creation response:', data);
 
         // Handle role-specific assignments
-        if (data?.user?.id) {
+        const userId = data?.id || data?.user?.id;
+        if (userId) {
           // For Organization Manager - assign to organization
           if (newUser.role === 'operations_manager' && newUser.organization_id) {
-            const { error: orgError } = await supabase
-              .from('organizations')
-              .update({ organization_manager_id: data.user.id })
-              .eq('id', newUser.organization_id);
+            try {
+              await apiClient.patch(`/scheduler/organizations/${newUser.organization_id}/`, { 
+                organization_manager_id: userId 
+              });
 
-            if (orgError) {
+            } catch (orgError: any) {
               console.error('Error assigning organization manager:', orgError);
               toast({
                 title: "Warning",
                 description: "User created but failed to assign to organization. Please assign manually.",
                 variant: "destructive",
               });
-            } else {
+            } finally {
               toast({
                 title: "Success",
                 description: "User created and assigned as Organization Manager.",
@@ -605,19 +518,19 @@ export default function UserManagement() {
           }
           // For Company Manager - assign to company
           else if (newUser.role === 'manager' && newUser.company_id) {
-            const { error: companyError } = await supabase
-              .from('companies')
-              .update({ company_manager_id: data.user.id })
-              .eq('id', newUser.company_id);
+            try {
+              await apiClient.patch(`/scheduler/companies/${newUser.company_id}/`, { 
+                company_manager_id: userId 
+              });
 
-            if (companyError) {
+            } catch (companyError: any) {
               console.error('Error assigning company manager:', companyError);
               toast({
                 title: "Warning",
                 description: "User created but failed to assign to company. Please assign manually.",
                 variant: "destructive",
               });
-            } else {
+            } finally {
               toast({
                 title: "Success",
                 description: "User created and assigned as Company Manager.",
@@ -634,55 +547,52 @@ export default function UserManagement() {
             let teamId: string | null = null;
             if (newUser.role === 'house_keeping' || newUser.role === 'maintenance') {
               const teamName = newUser.role === 'house_keeping' ? 'House Keeping' : 'Maintenance';
-              const { data: team } = await supabase
-                .from('schedule_teams')
-                .select('id')
-                .eq('company_id', newUser.company_id)
-                .eq('name', teamName)
-                .single();
-              
-              if (team) {
-                teamId = team.id;
-              } else {
-                // Create the team if it doesn't exist
-                const { data: newTeam } = await supabase
-                  .from('schedule_teams')
-                  .insert({
-                    company_id: newUser.company_id,
+              try {
+                const teams = await apiClient.get<any[]>('/scheduler/schedule-teams/', { 
+                  company: newUser.company_id,
+                  name: teamName 
+                });
+                
+                if (teams && teams.length > 0) {
+                  teamId = teams[0].id;
+                } else {
+                  // Create the team if it doesn't exist
+                  const newTeam = await apiClient.post('/scheduler/schedule-teams/', {
+                    company: newUser.company_id,
                     name: teamName,
                     color: newUser.role === 'house_keeping' ? '#3B82F6' : '#EF4444'
-                  })
-                  .select('id')
-                  .single();
-                
-                if (newTeam) {
-                  teamId = newTeam.id;
+                  });
+                  
+                  if (newTeam) {
+                    teamId = newTeam.id;
+                  }
                 }
+              } catch (error) {
+                console.error('Error handling team:', error);
               }
             }
             
-            const { error: employeeError } = await supabase
-              .from('employees')
-              .insert({
-                user_id: data.user.id,
+            try {
+              await apiClient.post('/scheduler/employees/', {
+                user: userId,
                 email: newUser.email,
                 first_name: firstName,
                 last_name: lastName,
-                company_id: newUser.company_id,
-                team_id: teamId,
+                company: newUser.company_id,
+                team: teamId,
                 status: 'active',
                 hire_date: new Date().toISOString().split('T')[0],
                 employee_pin: newUser.employee_pin || null
-              } as any);
+              });
 
-            if (employeeError) {
+            } catch (employeeError: any) {
               console.error('Error creating employee record:', employeeError);
               toast({
                 title: "Warning",
                 description: "User created but failed to add to company. Please assign manually.",
                 variant: "destructive",
               });
-            } else {
+            } finally {
               toast({
                 title: "Success",
                 description: "User created and added to company successfully.",
@@ -725,15 +635,10 @@ export default function UserManagement() {
 
     try {
       // Update profile
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
-          full_name: editingUser.full_name,
-          email: editingUser.email
-        })
-        .eq('user_id', editingUser.user_id);
-
-      if (error) throw error;
+      await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, { 
+        full_name: editingUser.full_name,
+        email: editingUser.email
+      });
 
       // Update user role
       await updateUserRole(editingUser.user_id, editingUser.role as any);
@@ -742,18 +647,17 @@ export default function UserManagement() {
       // For Organization Manager - update organization assignment
       if (editingUser.role === 'operations_manager' && editingUser.organization_id) {
         // First, remove from any previously assigned organization
-        await supabase
-          .from('organizations')
-          .update({ organization_manager_id: null })
-          .eq('organization_manager_id', editingUser.user_id);
+        const orgs = await apiClient.get<any[]>('/scheduler/organizations/', { organization_manager_id: editingUser.user_id });
+        await Promise.all(orgs.map((org: any) => 
+          apiClient.patch(`/scheduler/organizations/${org.id}/`, { organization_manager_id: null })
+        ));
         
         // Then assign to new organization
-        const { error: orgError } = await supabase
-          .from('organizations')
-          .update({ organization_manager_id: editingUser.user_id })
-          .eq('id', editingUser.organization_id);
-
-        if (orgError) {
+        try {
+          await apiClient.patch(`/scheduler/organizations/${editingUser.organization_id}/`, { 
+            organization_manager_id: editingUser.user_id 
+          });
+        } catch (orgError: any) {
           console.error('Error assigning organization manager:', orgError);
         }
       }
@@ -761,18 +665,17 @@ export default function UserManagement() {
       // For Company Manager - update company assignment
       if (editingUser.role === 'manager' && editingUser.company_id) {
         // First, remove from any previously assigned company
-        await supabase
-          .from('companies')
-          .update({ company_manager_id: null })
-          .eq('company_manager_id', editingUser.user_id);
+        const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager_id: editingUser.user_id });
+        await Promise.all(companies.map((comp: any) => 
+          apiClient.patch(`/scheduler/companies/${comp.id}/`, { company_manager_id: null })
+        ));
         
         // Then assign to new company
-        const { error: companyError } = await supabase
-          .from('companies')
-          .update({ company_manager_id: editingUser.user_id })
-          .eq('id', editingUser.company_id);
-
-        if (companyError) {
+        try {
+          await apiClient.patch(`/scheduler/companies/${editingUser.company_id}/`, { 
+            company_manager_id: editingUser.user_id 
+          });
+        } catch (companyError: any) {
           console.error('Error assigning company manager:', companyError);
         }
       }
@@ -783,51 +686,57 @@ export default function UserManagement() {
         let teamId: string | null = null;
         if (editingUser.role === 'house_keeping' || editingUser.role === 'maintenance') {
           const teamName = editingUser.role === 'house_keeping' ? 'House Keeping' : 'Maintenance';
-          const { data: team } = await supabase
-            .from('schedule_teams')
-            .select('id')
-            .eq('company_id', editingUser.company_id)
-            .eq('name', teamName)
-            .single();
-          
-          if (team) {
-            teamId = team.id;
-          } else {
-            // Create the team if it doesn't exist
-            const { data: newTeam } = await supabase
-              .from('schedule_teams')
-              .insert({
-                company_id: editingUser.company_id,
+          try {
+            const teams = await apiClient.get<any[]>('/scheduler/schedule-teams/', { 
+              company: editingUser.company_id,
+              name: teamName 
+            });
+            
+            if (teams && teams.length > 0) {
+              teamId = teams[0].id;
+            } else {
+              // Create the team if it doesn't exist
+              const newTeam = await apiClient.post('/scheduler/schedule-teams/', {
+                company: editingUser.company_id,
                 name: teamName,
                 color: editingUser.role === 'house_keeping' ? '#3B82F6' : '#EF4444'
-              })
-              .select('id')
-              .single();
-            
-            if (newTeam) {
-              teamId = newTeam.id;
+              });
+              
+              if (newTeam) {
+                teamId = newTeam.id;
+              }
             }
+          } catch (error) {
+            console.error('Error handling team:', error);
           }
         }
         
         // Check if employee record already exists
-        const { data: existingEmployee } = await supabase
-          .from('employees')
-          .select('id, company_id')
-          .or(`user_id.eq.${editingUser.user_id},email.eq.${editingUser.email}`)
-          .single();
+        let existingEmployee;
+        try {
+          const employees = await apiClient.get<any[]>('/scheduler/employees/', { 
+            user: editingUser.user_id 
+          });
+          existingEmployee = employees && employees.length > 0 ? employees[0] : null;
+          
+          if (!existingEmployee) {
+            const employeesByEmail = await apiClient.get<any[]>('/scheduler/employees/', { 
+              email: editingUser.email 
+            });
+            existingEmployee = employeesByEmail && employeesByEmail.length > 0 ? employeesByEmail[0] : null;
+          }
+        } catch (error) {
+          // Employee doesn't exist, that's fine
+        }
 
         if (existingEmployee) {
           // Update existing employee record with team assignment
-          const { error: updateError } = await supabase
-            .from('employees')
-            .update({ 
-              company_id: editingUser.company_id,
-              team_id: teamId
-            })
-            .eq('id', existingEmployee.id);
-          
-          if (updateError) {
+          try {
+            await apiClient.patch(`/scheduler/employees/${existingEmployee.id}/`, { 
+              company: editingUser.company_id,
+              team: teamId
+            });
+          } catch (updateError: any) {
             console.error('Error updating employee company:', updateError);
           }
         } else {
@@ -836,20 +745,18 @@ export default function UserManagement() {
           const firstName = nameParts[0] || '';
           const lastName = nameParts.slice(1).join(' ') || '';
           
-          const { error: insertError } = await supabase
-            .from('employees')
-            .insert({
-              user_id: editingUser.user_id,
+          try {
+            await apiClient.post('/scheduler/employees/', {
+              user: editingUser.user_id,
               email: editingUser.email,
               first_name: firstName,
               last_name: lastName,
-              company_id: editingUser.company_id,
-              team_id: teamId,
+              company: editingUser.company_id,
+              team: teamId,
               status: 'active',
               hire_date: new Date().toISOString().split('T')[0]
             });
-
-          if (insertError) {
+          } catch (insertError: any) {
             console.error('Error creating employee record:', insertError);
           }
         }
@@ -882,90 +789,104 @@ export default function UserManagement() {
       console.log('Deleting user:', userId, userEmail);
       
       // 1. Clean up organization assignments - remove from operations_manager_id and organization_manager_id
-      const { error: orgCleanupError } = await supabase
-        .from('organizations')
-        .update({ 
-          operations_manager_id: null,
-          organization_manager_id: null 
-        })
-        .or(`operations_manager_id.eq.${userId},organization_manager_id.eq.${userId}`);
-
-      if (orgCleanupError) {
+      try {
+        const orgs = await apiClient.get<any[]>('/scheduler/organizations/');
+        const orgsToUpdate = orgs.filter((org: any) => 
+          org.operations_manager_id === userId || org.organization_manager_id === userId
+        );
+        await Promise.all(orgsToUpdate.map((org: any) => 
+          apiClient.patch(`/scheduler/organizations/${org.id}/`, { 
+            operations_manager_id: null,
+            organization_manager_id: null 
+          })
+        ));
+      } catch (orgCleanupError: any) {
         console.error('Organization cleanup error:', orgCleanupError);
       }
 
       // 2. Clean up company assignments - remove from operations_manager_id and company_manager_id
-      const { error: companyCleanupError } = await supabase
-        .from('companies')
-        .update({ 
-          operations_manager_id: null,
-          company_manager_id: null 
-        })
-        .or(`operations_manager_id.eq.${userId},company_manager_id.eq.${userId}`);
-
-      if (companyCleanupError) {
+      try {
+        const companies = await apiClient.get<any[]>('/scheduler/companies/');
+        const companiesToUpdate = companies.filter((comp: any) => 
+          comp.operations_manager_id === userId || comp.company_manager_id === userId
+        );
+        await Promise.all(companiesToUpdate.map((comp: any) => 
+          apiClient.patch(`/scheduler/companies/${comp.id}/`, { 
+            operations_manager_id: null,
+            company_manager_id: null 
+          })
+        ));
+      } catch (companyCleanupError: any) {
         console.error('Company cleanup error:', companyCleanupError);
       }
 
       // 3. Delete employee records by user_id
-      const { error: employeeError } = await supabase
-        .from('employees')
-        .delete()
-        .eq('user_id', userId);
-
-      if (employeeError) console.log('No employee record to clean up by user_id:', employeeError);
+      try {
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: userId });
+        await Promise.all(employees.map((emp: any) => 
+          apiClient.delete(`/scheduler/employees/${emp.id}/`)
+        ));
+      } catch (employeeError: any) {
+        console.log('No employee record to clean up by user_id:', employeeError);
+      }
 
       // 3b. Also try to delete by email (for virtual employees without user_id)
       if (userEmail) {
-        const { error: employeeEmailError } = await supabase
-          .from('employees')
-          .delete()
-          .eq('email', userEmail);
-
-        if (employeeEmailError) console.log('No employee record to clean up by email:', employeeEmailError);
+        try {
+          const employees = await apiClient.get<any[]>('/scheduler/employees/', { email: userEmail });
+          await Promise.all(employees.map((emp: any) => 
+            apiClient.delete(`/scheduler/employees/${emp.id}/`)
+          ));
+        } catch (employeeEmailError: any) {
+          console.log('No employee record to clean up by email:', employeeEmailError);
+        }
       }
 
       // 4. Delete user roles
-      const { error: rolesError } = await supabase
-        .from('user_roles')
-        .delete()
-        .eq('user_id', userId);
-
-      if (rolesError) {
+      try {
+        const userData = await apiClient.get<any>(`/auth/users/${userId}/`);
+        const roles = userData?.roles || [];
+        await Promise.all(roles.map((role: any) => 
+          apiClient.delete(`/auth/user-roles/${role.id}/`)
+        ));
+      } catch (rolesError: any) {
         console.error('Error deleting user roles:', rolesError);
         // Continue with deletion even if roles cleanup fails
       }
 
       // 5. Delete calendar events
-      const { error: eventsError } = await supabase
-        .from('calendar_events')
-        .delete()
-        .eq('user_id', userId);
-
-      if (eventsError) console.log('No calendar events to clean up');
+      try {
+        const events = await apiClient.get<any[]>('/calendar/events/', { user: userId });
+        await Promise.all(events.map((event: any) => 
+          apiClient.delete(`/calendar/events/${event.id}/`)
+        ));
+      } catch (eventsError: any) {
+        console.log('No calendar events to clean up');
+      }
 
       // 6. Delete other user-related data
-      const { error: habitsError } = await supabase
-        .from('habits')
-        .delete()
-        .eq('user_id', userId);
+      try {
+        const habits = await apiClient.get<any[]>('/habits/habits/', { user: userId });
+        await Promise.all(habits.map((habit: any) => 
+          apiClient.delete(`/habits/habits/${habit.id}/`)
+        ));
+      } catch (habitsError: any) {
+        console.log('No habits to clean up');
+      }
 
-      if (habitsError) console.log('No habits to clean up');
-
-      const { error: focusError } = await supabase
-        .from('focus_sessions')
-        .delete()
-        .eq('user_id', userId);
-
-      if (focusError) console.log('No focus sessions to clean up');
+      try {
+        const sessions = await apiClient.get<any[]>('/focus/sessions/', { user: userId });
+        await Promise.all(sessions.map((session: any) => 
+          apiClient.delete(`/focus/sessions/${session.id}/`)
+        ));
+      } catch (focusError: any) {
+        console.log('No focus sessions to clean up');
+      }
 
       // 7. Finally mark profile as deleted (this maintains the record but marks it inactive)
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({ status: 'deleted' })
-        .eq('user_id', userId);
-
-      if (profileError) {
+      try {
+        await apiClient.patch(`/auth/profiles/${userId}/`, { status: 'deleted' });
+      } catch (profileError: any) {
         console.error('Error marking profile as deleted:', profileError);
         throw profileError;
       }
@@ -996,17 +917,18 @@ export default function UserManagement() {
       const tempPassword = Math.random().toString(36).slice(-12);
       
       // Send reinvite email
-      const { error } = await supabase.functions.invoke('send-welcome-email', {
-        body: {
+      // Note: Email sending endpoint needs to be implemented in Django
+      try {
+        await apiClient.post('/auth/send-welcome-email/', {
           email: userEmail,
           full_name: userFullName,
           role: userRole,
           password: tempPassword,
-          isReinvite: true
-        }
-      });
-
-      if (error) throw error;
+          is_reinvite: true
+        });
+      } catch (error: any) {
+        throw error;
+      }
 
       toast({
         title: "Success",
@@ -1034,58 +956,36 @@ export default function UserManagement() {
 
     try {
       // First get the company details to determine app_type based on field_type
-      const { data: companyData, error: companyFetchError } = await supabase
-        .from('companies')
-        .select('field_type')
-        .eq('id', assignmentData.company_id)
-        .single();
-
-      if (companyFetchError) throw companyFetchError;
-
+      const companyData = await apiClient.get<any>(`/scheduler/companies/${assignmentData.company_id}/`);
       const appType = companyData.field_type === 'IT' ? 'calendar' : 'scheduler';
 
       // Process each selected user
       for (const userId of selectedUsersForAssignment) {
         // For operations_manager role, update the organization
         if (assignmentData.role === "operations_manager") {
-          const { error: companyError } = await supabase
-            .from('companies')
-            .update({ operations_manager_id: userId })
-            .eq('id', assignmentData.company_id);
-
-          if (companyError) throw companyError;
+          await apiClient.patch(`/scheduler/companies/${assignmentData.company_id}/`, { 
+            operations_manager_id: userId 
+          });
         } else if (assignmentData.role === "manager") {
           // For manager role (company manager), update the company
-          const { error: companyError } = await supabase
-            .from('companies')
-            .update({ company_manager_id: userId })
-            .eq('id', assignmentData.company_id);
-
-          if (companyError) throw companyError;
+          await apiClient.patch(`/scheduler/companies/${assignmentData.company_id}/`, { 
+            company_manager_id: userId 
+          });
         } else if (assignmentData.role === "employee") {
           // For employee role, create employee record
           // First get the user profile data
-          const { data: userProfile, error: profileError } = await supabase
-            .from('profiles')
-            .select('full_name, email')
-            .eq('user_id', userId)
-            .single();
-
-          if (profileError) throw profileError;
+          const userData = await apiClient.get<any>(`/auth/users/${userId}/`);
+          const userProfile = userData?.profile || {};
 
           if (userProfile) {
-            const { error: employeeError } = await supabase
-              .from('employees')
-              .insert({
-                user_id: userId,
-                first_name: userProfile.full_name?.split(' ')[0] || '',
-                last_name: userProfile.full_name?.split(' ').slice(1).join(' ') || '',
-                email: userProfile.email || '',
-                company_id: assignmentData.company_id,
-                status: 'active'
-              });
-
-            if (employeeError) throw employeeError;
+            await apiClient.post('/scheduler/employees/', {
+              user: userId,
+              first_name: userProfile.full_name?.split(' ')[0] || '',
+              last_name: userProfile.full_name?.split(' ').slice(1).join(' ') || '',
+              email: userData.email || '',
+              company: assignmentData.company_id,
+              status: 'active'
+            });
           }
         } else if (assignmentData.role === "super_admin") {
           // Super admin role - just add the role, no company assignment needed
@@ -1105,24 +1005,21 @@ export default function UserManagement() {
         }
         
         // First, delete any existing roles for this user (both calendar and scheduler)
-        const { error: deleteRoleError } = await supabase
-          .from('user_roles')
-          .delete()
-          .eq('user_id', userId)
-          .in('app_type', ['calendar', 'scheduler']);
-
-        if (deleteRoleError) throw deleteRoleError;
+        const userData = await apiClient.get<any>(`/auth/users/${userId}/`);
+        const existingRoles = userData?.roles || [];
+        const rolesToDelete = existingRoles.filter((r: any) => 
+          r.app_type === 'calendar' || r.app_type === 'scheduler'
+        );
+        await Promise.all(rolesToDelete.map((role: any) => 
+          apiClient.delete(`/auth/user-roles/${role.id}/`)
+        ));
 
         // Then insert the new role with correct app_type based on company field_type
-        const { error: roleError } = await supabase
-          .from('user_roles')
-          .insert({
-            user_id: userId,
-            role: finalRole,
-            app_type: appType
-          });
-
-        if (roleError) throw roleError;
+        await apiClient.post('/auth/user-roles/', {
+          user: userId,
+          role: finalRole,
+          app_type: appType
+        });
       }
 
       const userCount = selectedUsersForAssignment.length;
@@ -1773,11 +1670,22 @@ export default function UserManagement() {
                               orgId = company.organization_id;
                             }
                           } else if (userProfile.role === 'employee') {
-                            const { data: employee } = await supabase
-                              .from('employees')
-                              .select('company_id')
-                              .or(`user_id.eq.${userProfile.user_id},email.eq.${userProfile.email}`)
-                              .single();
+                            let employee;
+                            try {
+                              const employees = await apiClient.get<any[]>('/scheduler/employees/', { 
+                                user: userProfile.user_id 
+                              });
+                              employee = employees && employees.length > 0 ? employees[0] : null;
+                              
+                              if (!employee) {
+                                const employeesByEmail = await apiClient.get<any[]>('/scheduler/employees/', { 
+                                  email: userProfile.email 
+                                });
+                                employee = employeesByEmail && employeesByEmail.length > 0 ? employeesByEmail[0] : null;
+                              }
+                            } catch (error) {
+                              employee = null;
+                            }
                             
                             if (employee?.company_id) {
                               companyId = employee.company_id;

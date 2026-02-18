@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 
 /**
  * Role Hierarchy:
@@ -24,16 +24,11 @@ export const useUserRole = () => {
     }
 
     try {
-      const { data, error } = await supabase
-        .from('user_roles')
-        .select('role, app_type')
-        .eq('user_id', user.id);
-
-      if (error) {
-        console.error('Error fetching user role:', error);
-        setRole(null);
-      } else if (data && data.length > 0) {
-        const roles = data.map(r => r.role as UserRole);
+      const userData = await apiClient.getCurrentUser() as any;
+      
+      // Check if user has roles in the response
+      if (userData?.roles && userData.roles.length > 0) {
+        const roles = userData.roles.map((r: any) => r.role as UserRole);
         setAllRoles(roles);
         
         // Determine primary role based on hierarchy priority
@@ -55,7 +50,8 @@ export const useUserRole = () => {
           setRole('user');
         }
       } else {
-        setRole(null);
+        setRole('user');
+        setAllRoles(['user']);
       }
     } catch (error) {
       console.error('Error in fetchUserRole:', error);
@@ -67,26 +63,6 @@ export const useUserRole = () => {
 
   useEffect(() => {
     fetchUserRole();
-
-    // Set up real-time subscription for user_roles changes
-    if (user) {
-      const subscription = supabase
-        .channel(`user_roles_changes_${user.id}`)
-        .on('postgres_changes', { 
-          event: '*', 
-          schema: 'public', 
-          table: 'user_roles',
-          filter: `user_id=eq.${user.id}`
-        }, () => {
-          // Refetch roles when changes occur
-          fetchUserRole();
-        })
-        .subscribe();
-
-      return () => {
-        subscription.unsubscribe();
-      };
-    }
   }, [user]);
 
   // Super Admin, Organization Manager (operations_manager), and Company Manager (manager) have admin privileges

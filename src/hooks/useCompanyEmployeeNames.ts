@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useAuth } from "@/hooks/useAuth";
 
 export type CompanyEmployeeName = {
@@ -36,12 +36,8 @@ export function useCompanyEmployeeNames(companyId?: string | null) {
         setLoading(true);
         setError(null);
 
-        const { data, error: rpcError } = await (supabase as any).rpc(
-          "get_company_employee_names",
-          { _company_id: companyId }
-        );
-
-        if (rpcError) throw rpcError;
+        // Use employees endpoint with company filter
+        const data = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId });
 
         // Be tolerant of partial names (some rows may have missing/blank last_name)
         // so we don't drop valid employees and end up rendering "Unknown" in the UI.

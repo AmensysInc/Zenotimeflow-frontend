@@ -3,7 +3,8 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Upload, X, File, FileText, Image, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/integrations/supabase/client';
+import apiClient from '@/lib/api-client';
+import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/hooks/use-toast';
 
 interface FileUploadProps {
@@ -28,6 +29,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(event.target.files || []);
@@ -46,42 +48,45 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     setIsUploading(true);
     
     try {
+      if (!user) {
+        toast({
+          title: "Authentication required",
+          description: "You need to be logged in to upload files",
+          variant: "destructive",
+        });
+        return;
+      }
+
       for (const file of selectedFiles) {
         if (onFileUpload) {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (!user) {
-            toast({
-              title: "Authentication required",
-              description: "You need to be logged in to upload files",
-              variant: "destructive",
-            });
-            continue;
-          }
-
-          // Create a unique file path
-          const fileExt = file.name.split('.').pop();
-          const fileName = `${user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+          // Create FormData for file upload
+          const formData = new FormData();
+          formData.append('file', file);
           
-          // Upload file to Supabase storage
-          const { data, error } = await supabase.storage
-            .from('task-attachments')
-            .upload(fileName, file);
+          try {
+            // Upload file to Django backend
+            const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/tasks/attachments/`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiClient.getToken()}`
+              },
+              body: formData
+            });
 
-          if (error) {
+            if (!response.ok) {
+              throw new Error('Upload failed');
+            }
+
+            const result = await response.json();
+            await onFileUpload(file);
+          } catch (error: any) {
             toast({
               title: "Upload failed",
-              description: error.message,
+              description: error.message || "Failed to upload file",
               variant: "destructive",
             });
             continue;
           }
-
-          // Get public URL for the file
-          const { data: { publicUrl } } = supabase.storage
-            .from('task-attachments')
-            .getPublicUrl(fileName);
-
-          await onFileUpload(file);
         }
       }
     } catch (error) {

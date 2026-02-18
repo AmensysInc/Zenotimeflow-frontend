@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -115,15 +115,12 @@ const LearningTemplates = () => {
   const checkUserRole = async () => {
     if (!user) return;
     
-    const { data } = await supabase
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', user.id);
-    
-    if (data && data.length > 0) {
-      const roles = data.map(item => item.role);
-      setIsAdmin(roles.includes('super_admin') || roles.includes('manager'));
-    } else {
+    try {
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const roleNames = roles.map((r: any) => r.role);
+      setIsAdmin(roleNames.includes('super_admin') || roleNames.includes('manager'));
+    } catch (error) {
       setIsAdmin(false);
     }
   };
@@ -132,33 +129,14 @@ const LearningTemplates = () => {
     try {
       if (!isAdmin) {
         // Regular users see only assigned templates
-        const { data: userAssignments } = await supabase
-          .from('template_assignments')
-          .select('template_id')
-          .eq('user_id', user?.id);
-
-        const templateIds = userAssignments?.map(a => a.template_id) || [];
-        if (templateIds.length === 0) {
-          setTemplates([]);
-          setIsLoading(false);
-          return;
-        }
-
-        const { data: templatesData } = await supabase
-          .from('learning_templates')
-          .select('*')
-          .in('id', templateIds)
-          .order('created_at', { ascending: false });
-
-        setTemplates(templatesData || []);
+        // Note: Template assignments endpoint needs to be implemented in Django
+        setTemplates([]);
+        setIsLoading(false);
+        return;
       } else {
         // Admins see all templates
-        const { data } = await supabase
-          .from('learning_templates')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        setTemplates(data || []);
+        // Note: Learning templates endpoint needs to be implemented in Django
+        setTemplates([]);
       }
     } catch (error) {
       console.error('Error fetching templates:', error);
@@ -170,13 +148,15 @@ const LearningTemplates = () => {
   const fetchTeamMembers = async () => {
     if (!isAdmin) return;
     
-    const { data } = await supabase
-      .from('profiles')
-      .select('user_id, full_name, email')
-      .neq('status', 'deleted') // Exclude deleted users
-      .eq('status', 'active'); // Only show active users
-
-    setTeamMembers(data || []);
+    const users = await apiClient.get<any[]>('/auth/users/');
+    const teamMembersData = users
+      .filter((u: any) => u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
+      .map((u: any) => ({
+        user_id: u.id,
+        full_name: u.profile?.full_name || u.full_name || null,
+        email: u.email
+      }));
+    setTeamMembers(teamMembersData);
   };
 
   const fetchAllTemplateData = async () => {
@@ -184,32 +164,19 @@ const LearningTemplates = () => {
 
     try {
       // Fetch assignments for all templates
-      let assignmentsQuery = supabase
-        .from('template_assignments')
-        .select('*');
-
-      if (!isAdmin) {
-        assignmentsQuery = assignmentsQuery.eq('user_id', user.id);
-      }
-
-      const { data: assignmentsData } = await assignmentsQuery;
-      setAssignments(assignmentsData || []);
+      // Note: Template assignments endpoint needs to be implemented in Django
+      setAssignments([]);
 
       // Fetch tasks for expanded templates
       const templateIds = Array.from(expandedTemplates);
       if (templateIds.length === 0) return;
 
-      let tasksQuery = supabase
-        .from('calendar_events')
-        .select('*')
-        .in('template_id', templateIds)
-        .not('template_id', 'is', null);
-
+      const params: any = { template_id: templateIds.join(',') };
       if (!isAdmin) {
-        tasksQuery = tasksQuery.eq('user_id', user.id);
+        params.user = user.id;
       }
 
-      const { data: tasksData } = await tasksQuery.order('created_at', { ascending: false });
+      const tasksData = await apiClient.get<any[]>('/calendar/events/', params);
 
       const transformedTasks = (tasksData || []).map(task => ({
         id: task.id,
@@ -236,14 +203,11 @@ const LearningTemplates = () => {
     if (!user || !isAdmin) return;
 
     try {
-      const { error } = await supabase
-        .from('learning_templates')
-        .insert([{
-          ...templateForm,
-          created_by: user.id,
-        }]);
-
-      if (error) throw error;
+      // Note: Learning templates endpoint needs to be implemented in Django
+      await apiClient.post('/templates/', {
+        ...templateForm,
+        created_by: user.id,
+      });
 
       toast.success('Template created successfully');
       setIsCreateDialogOpen(false);
@@ -258,16 +222,12 @@ const LearningTemplates = () => {
     if (!user || !isAdmin || !selectedTemplate) return;
 
     try {
-      const { error } = await supabase
-        .from('learning_templates')
-        .update({
-          name: templateForm.name,
-          description: templateForm.description,
-          technology: templateForm.technology,
-        })
-        .eq('id', selectedTemplate.id);
-
-      if (error) throw error;
+      // Note: Learning templates endpoint needs to be implemented in Django
+      await apiClient.patch(`/templates/${selectedTemplate.id}/`, {
+        name: templateForm.name,
+        description: templateForm.description,
+        technology: templateForm.technology,
+      });
 
       toast.success('Template updated successfully');
       setIsEditDialogOpen(false);
@@ -283,18 +243,13 @@ const LearningTemplates = () => {
     if (!user || !selectedTask) return;
 
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({
-          title: editTaskForm.title,
-          description: editTaskForm.description,
-          priority: editTaskForm.priority,
-          start_time: editTaskForm.due_date ? new Date(editTaskForm.due_date).toISOString() : null,
-          end_time: editTaskForm.due_date ? new Date(editTaskForm.due_date).toISOString() : null,
-        })
-        .eq('id', editTaskForm.id);
-
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${editTaskForm.id}/`, {
+        title: editTaskForm.title,
+        description: editTaskForm.description,
+        priority: editTaskForm.priority,
+        start_time: editTaskForm.due_date ? new Date(editTaskForm.due_date).toISOString() : null,
+        end_time: editTaskForm.due_date ? new Date(editTaskForm.due_date).toISOString() : null,
+      });
 
       toast.success('Task updated successfully');
       setIsEditTaskDialogOpen(false);
@@ -310,14 +265,9 @@ const LearningTemplates = () => {
     if (!user || !selectedTask || !editTaskForm.user_id) return;
 
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({
-          user_id: editTaskForm.user_id,
-        })
-        .eq('id', selectedTask.id);
-
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${selectedTask.id}/`, {
+        user: editTaskForm.user_id,
+      });
 
       toast.success('Task reassigned successfully');
       setIsReassignDialogOpen(false);
@@ -360,24 +310,15 @@ const LearningTemplates = () => {
 
     try {
       // Delete all associated tasks first
-      await supabase
-        .from('calendar_events')
-        .delete()
-        .eq('template_id', templateId);
+      const tasks = await apiClient.get<any[]>('/calendar/events/', { template_id: templateId });
+      await Promise.all(tasks.map((task: any) => apiClient.delete(`/calendar/events/${task.id}/`)));
 
       // Delete all assignments
-      await supabase
-        .from('template_assignments')
-        .delete()
-        .eq('template_id', templateId);
+      // Note: Template assignments endpoint needs to be implemented in Django
 
       // Delete the template
-      const { error } = await supabase
-        .from('learning_templates')
-        .delete()
-        .eq('id', templateId);
-
-      if (error) throw error;
+      // Note: Learning templates endpoint needs to be implemented in Django
+      await apiClient.delete(`/templates/${templateId}/`);
 
       toast.success('Template deleted successfully');
       fetchTemplates();
@@ -393,7 +334,7 @@ const LearningTemplates = () => {
     try {
       // If no users selected, create a template-level task without user assignment
       if (selectedUserIds.length === 0) {
-        const { error } = await supabase.from('calendar_events').insert([{
+        await apiClient.post('/calendar/events/', {
           title: taskForm.title,
           description: taskForm.description,
           priority: taskForm.priority,
@@ -401,15 +342,13 @@ const LearningTemplates = () => {
           end_time: taskForm.due_date ? new Date(taskForm.due_date).toISOString() : null,
           all_day: true,
           event_type: 'task',
-          user_id: user.id, // Assign to current admin for RLS compliance
+          user: user.id, // Assign to current admin
           template_id: selectedTemplate.id,
-        }]);
-        
-        if (error) throw error;
+        });
       } else {
         // Create tasks for selected users
         const taskPromises = selectedUserIds.map(userId =>
-          supabase.from('calendar_events').insert([{
+          apiClient.post('/calendar/events/', {
             title: taskForm.title,
             description: taskForm.description,
             priority: taskForm.priority,
@@ -417,9 +356,9 @@ const LearningTemplates = () => {
             end_time: taskForm.due_date ? new Date(taskForm.due_date).toISOString() : null,
             all_day: true,
             event_type: 'task',
-            user_id: userId,
+            user: userId,
             template_id: selectedTemplate.id,
-          }])
+          })
         );
 
         await Promise.all(taskPromises);
@@ -439,15 +378,12 @@ const LearningTemplates = () => {
     if (!user || !isAdmin) return;
 
     try {
-      const { error } = await supabase
-        .from('template_assignments')
-        .insert([{
-          template_id: templateId,
-          user_id: userId,
-          assigned_by: user.id,
-        }]);
-
-      if (error) throw error;
+      // Note: Template assignments endpoint needs to be implemented in Django
+      await apiClient.post('/templates/assignments/', {
+        template_id: templateId,
+        user_id: userId,
+        assigned_by: user.id,
+      });
       
       toast.success('User assigned to template successfully');
       fetchAllTemplateData();
@@ -461,26 +397,15 @@ const LearningTemplates = () => {
 
     try {
       // Remove template assignment
-      await supabase
-        .from('template_assignments')
-        .delete()
-        .eq('template_id', templateId)
-        .eq('user_id', userId);
+      // Note: Template assignments endpoint needs to be implemented in Django
+      await apiClient.delete(`/templates/assignments/?template_id=${templateId}&user_id=${userId}`);
 
-      // Keep tasks but mark them as unassigned by removing user_id reference
+      // Keep tasks but mark them as unassigned by removing user reference
       // This preserves the task history and content
-      await supabase
-        .from('calendar_events')
-        .update({ user_id: null })
-        .eq('template_id', templateId)
-        .eq('user_id', userId);
-
-      // Also update template_tasks if they exist
-      await supabase
-        .from('template_tasks')
-        .update({ user_id: null })
-        .eq('template_id', templateId)
-        .eq('user_id', userId);
+      const tasks = await apiClient.get<any[]>('/calendar/events/', { template_id: templateId, user: userId });
+      await Promise.all(tasks.map((task: any) => 
+        apiClient.patch(`/calendar/events/${task.id}/`, { user: null })
+      ));
 
       toast.success('User removed from template successfully. Tasks preserved as unassigned.');
       fetchAllTemplateData();
@@ -496,12 +421,7 @@ const LearningTemplates = () => {
         updateData.files = JSON.stringify(files);
       }
 
-      const { error } = await supabase
-        .from('calendar_events')
-        .update(updateData)
-        .eq('id', taskId);
-
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${taskId}/`, updateData);
 
       toast.success('Notes updated successfully');
       fetchAllTemplateData();
@@ -512,15 +432,10 @@ const LearningTemplates = () => {
 
   const toggleTaskCompletion = async (taskId: string, completed: boolean) => {
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({ 
-          completed: !completed,
-          completed_at: !completed ? new Date().toISOString() : null 
-        })
-        .eq('id', taskId);
-
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${taskId}/`, { 
+        completed: !completed,
+        completed_at: !completed ? new Date().toISOString() : null 
+      });
 
       toast.success(`Task marked as ${!completed ? 'completed' : 'pending'}`);
       fetchAllTemplateData();
@@ -531,12 +446,7 @@ const LearningTemplates = () => {
 
   const deleteTask = async (taskId: string) => {
     try {
-      const { error } = await supabase
-        .from('calendar_events')
-        .delete()
-        .eq('id', taskId);
-
-      if (error) throw error;
+      await apiClient.delete(`/calendar/events/${taskId}/`);
 
       toast.success('Task deleted successfully');
       fetchAllTemplateData();

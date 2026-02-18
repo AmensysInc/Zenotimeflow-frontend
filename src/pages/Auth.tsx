@@ -6,8 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Loader2 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 const Auth = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -15,57 +16,39 @@ const Auth = () => {
   const [password, setPassword] = useState("");
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
 
   useEffect(() => {
     console.log("Auth page loaded");
     
     // Check if user is already authenticated
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        console.log("User already authenticated, redirecting to calendar");
-        navigate("/calendar");
-        return;
-      }
-    };
-    
-    checkSession();
-
-    // Set up auth state listener to handle sign-in redirects
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (event === 'SIGNED_IN' && session) {
-          console.log("Sign in successful, redirecting to calendar");
-          navigate("/calendar");
-        }
-      }
-    );
-
-    return () => subscription.unsubscribe();
-  }, [navigate]);
+    if (user) {
+      console.log("User already authenticated, redirecting to calendar");
+      navigate("/calendar");
+    }
+  }, [user, navigate]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     console.log("Attempting sign in with email:", email);
     setIsLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
+    try {
+      const response = await apiClient.login(email, password);
+      console.log("Sign in successful", response);
+      
+      // Update auth context by reloading the page or using a state update
+      // For now, we'll reload to trigger auth check
+      window.location.href = "/calendar";
+    } catch (error: any) {
       console.error("Sign in error:", error);
       toast({
         title: "Sign in failed",
-        description: error.message,
+        description: error.message || "Invalid email or password",
         variant: "destructive",
       });
-    } else {
-      console.log("Sign in successful");
-      // Auth state change listener will handle the redirect
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   return (

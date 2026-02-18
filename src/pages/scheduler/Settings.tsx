@@ -9,7 +9,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useToast } from "@/hooks/use-toast";
 
 export default function SchedulerSettings() {
@@ -43,20 +43,8 @@ export default function SchedulerSettings() {
       if (!user) return;
 
       try {
-        const { data, error } = await supabase
-          .from('app_settings')
-          .select('*')
-          .eq('user_id', user.id)
-          .single();
-
-        if (error && error.code !== 'PGRST116') {
-          console.error('Error loading settings:', error);
-          toast({
-            title: "Error",
-            description: "Failed to load settings. Using defaults.",
-            variant: "destructive"
-          });
-        } else if (data) {
+        try {
+          const data = await apiClient.get<any>(`/scheduler/app-settings/${user.id}/`);
           setSettings({
             companyName: data.company_name || "zenotimeflow",
             timezone: data.timezone || "America/New_York",
@@ -76,6 +64,15 @@ export default function SchedulerSettings() {
             requireClockInLocation: data.require_clock_in_location ?? false,
             allowMobileClockIn: data.allow_mobile_clock_in ?? true
           });
+        } catch (error: any) {
+          if (error.status !== 404) {
+            console.error('Error loading settings:', error);
+            toast({
+              title: "Error",
+              description: "Failed to load settings. Using defaults.",
+              variant: "destructive"
+            });
+          }
         }
       } catch (error) {
         console.error('Error in loadSettings:', error);
@@ -111,23 +108,18 @@ export default function SchedulerSettings() {
         allow_mobile_clock_in: settings.allowMobileClockIn
       };
 
-      const { error } = await supabase
-        .from('app_settings')
-        .upsert(settingsData, {
-          onConflict: 'user_id'
+      try {
+        await apiClient.post('/scheduler/app-settings/', settingsData);
+        toast({
+          title: "Success",
+          description: "Settings saved successfully!",
         });
-
-      if (error) {
+      } catch (error: any) {
         console.error('Error saving settings:', error);
         toast({
           title: "Error",
           description: "Failed to save settings. Please try again.",
           variant: "destructive"
-        });
-      } else {
-        toast({
-          title: "Success",
-          description: "Settings saved successfully!",
         });
       }
     } catch (error) {

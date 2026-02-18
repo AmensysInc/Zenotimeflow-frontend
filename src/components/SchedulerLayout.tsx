@@ -3,7 +3,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Calendar, Users, Clock, Settings, LogOut, Menu, Building, ArrowLeftRight } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,10 +29,8 @@ const SchedulerLayout = ({ children }: SchedulerLayoutProps) => {
       if (!user) return;
 
       try {
-        const { data: roles } = await supabase
-          .from('user_roles')
-          .select('role')
-          .eq('user_id', user.id);
+        const userData = await apiClient.getCurrentUser() as any;
+        const roles = userData?.roles || [];
 
         if (roles && roles.length > 0) {
           const roleList = roles.map(r => r.role);

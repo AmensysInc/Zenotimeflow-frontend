@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Download } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { toast } from "sonner";
 import { format, parseISO, differenceInMinutes } from "date-fns";
 
@@ -36,38 +36,31 @@ export default function EmployeeScheduleReportModal({
       const endISO = new Date(endDate + "T23:59:59").toISOString();
 
       // Fetch employees for this company
-      const { data: employees, error: empError } = await supabase
-        .from("employees")
-        .select("id, first_name, last_name")
-        .eq("company_id", companyId)
-        .eq("status", "active")
-        .order("first_name");
-
-      if (empError) throw empError;
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+        company: companyId,
+        status: 'active'
+      });
+      
       if (!employees || employees.length === 0) {
         toast.error("No employees found");
         return;
       }
 
       // Fetch shifts in range
-      const { data: shifts, error: shiftError } = await supabase
-        .from("shifts")
-        .select("id, employee_id, start_time, end_time")
-        .eq("company_id", companyId)
-        .gte("start_time", startISO)
-        .lte("start_time", endISO);
+      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        company: companyId,
+        start_time__gte: startISO,
+        start_time__lte: endISO
+      });
 
-      if (shiftError) throw shiftError;
-
-      const shiftIds = (shifts || []).map((s) => s.id);
+      const shiftIds = shifts.map((s: any) => s.id);
 
       // Fetch time clock entries
       let clockEntries: any[] = [];
       if (shiftIds.length > 0) {
-        const { data: clockData } = await supabase
-          .from("time_clock")
-          .select("employee_id, clock_in, clock_out, break_start, break_end, total_hours")
-          .in("shift_id", shiftIds);
+        const clockData = await apiClient.get<any[]>('/scheduler/time-clock/', {
+          shift__in: shiftIds.join(',')
+        });
         clockEntries = clockData || [];
       }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { useToast } from "@/hooks/use-toast";
 import { MonthView } from "@/components/calendar/MonthView";
 import { WeekView } from "@/components/calendar/WeekView";
@@ -84,11 +84,8 @@ const Calendar = () => {
         return;
       }
       
-      const { data: employee } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const employee = employees?.[0];
       
       if (employee) {
         setEmployeeId(employee.id);
@@ -110,24 +107,14 @@ const Calendar = () => {
         const monthStart = startOfMonth(currentDate);
         const monthEnd = endOfMonth(currentDate);
 
-        const { data, error } = await supabase
-          .from('calendar_events')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('event_type', 'task')
-          .gte('start_time', monthStart.toISOString())
-          .lte('start_time', monthEnd.toISOString())
-          .order('start_time', { ascending: true });
+        const data = await apiClient.get<CalendarEvent[]>('/calendar/events/', {
+          user: user.id,
+          event_type: 'task',
+          start_date: monthStart.toISOString(),
+          end_date: monthEnd.toISOString()
+        });
 
-        if (error) {
-          toast({
-            title: "Error fetching tasks",
-            description: error.message,
-            variant: "destructive",
-          });
-        } else {
-          setTasks(data || []);
-        }
+        setTasks(data || []);
       } catch (error) {
         console.error('Error fetching tasks:', error);
       } finally {
@@ -159,26 +146,13 @@ const Calendar = () => {
         const monthStart = startOfMonth(currentDate);
         const monthEnd = endOfMonth(currentDate);
 
-        const { data, error } = await supabase
-          .from('shifts')
-          .select(`
-            *,
-            companies (name)
-          `)
-          .eq('employee_id', employeeId)
-          .gte('start_time', monthStart.toISOString())
-          .lte('start_time', monthEnd.toISOString())
-          .order('start_time', { ascending: true });
+        const data = await apiClient.get<Shift[]>('/scheduler/shifts/', {
+          employee: employeeId,
+          start_date: monthStart.toISOString(),
+          end_date: monthEnd.toISOString()
+        });
 
-        if (error) {
-          toast({
-            title: "Error fetching shifts",
-            description: error.message,
-            variant: "destructive",
-          });
-        } else {
-          setShifts(data || []);
-        }
+        setShifts(data || []);
       } catch (error) {
         console.error('Error fetching shifts:', error);
       } finally {
@@ -188,26 +162,7 @@ const Calendar = () => {
 
     fetchShifts();
 
-    // Set up real-time subscription for shifts
-    const channel = supabase
-      .channel('shifts-calendar-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'shifts',
-          filter: `employee_id=eq.${employeeId}`
-        },
-        () => {
-          fetchShifts();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    // Real-time subscriptions removed - can be added back with WebSocket support later
   }, [employeeId, currentDate, toast, isSuperAdmin, isManager]);
 
   // Convert shifts to calendar event format (for employees)

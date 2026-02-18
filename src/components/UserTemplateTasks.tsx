@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -51,65 +51,35 @@ function UserTemplateTasks() {
     fetchUserTemplateTasks();
   }, [user]);
 
-  useEffect(() => {
-    // Set up real-time subscription for calendar_events changes
-    const channel = supabase
-      .channel('template-tasks-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'calendar_events'
-        },
-        () => {
-          fetchUserTemplateTasks();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user]);
+  // Note: Real-time updates will be handled by Django Channels in the future
 
   const fetchUserTemplateTasks = async () => {
     if (!user) return;
 
     try {
-      // First, get all template assignments for the user
-      const { data: assignments, error: assignmentsError } = await supabase
-        .from('template_assignments')
-        .select('template_id')
-        .eq('user_id', user.id);
+      // Note: Template assignments endpoint needs to be implemented in Django
+      // For now, fetch tasks directly for the user with template_id
+      const tasks = await apiClient.get<any[]>('/calendar/events/', { 
+        user: user.id,
+        template_id__isnull: false
+      });
 
-      if (assignmentsError) throw assignmentsError;
-
-      if (!assignments || assignments.length === 0) {
+      if (!tasks || tasks.length === 0) {
         setLoading(false);
         return;
       }
 
-      const templateIds = assignments.map(a => a.template_id);
+      // Get unique template IDs from tasks
+      const templateIds = [...new Set(tasks.map(t => t.template_id).filter(Boolean))];
 
-      // Get template details
-      const { data: templates, error: templatesError } = await supabase
-        .from('learning_templates')
-        .select('*')
-        .in('id', templateIds);
-
-      if (templatesError) throw templatesError;
-
-      // Get tasks from calendar_events for each template
-      const { data: tasks, error: tasksError } = await supabase
-        .from('calendar_events')
-        .select('*')
-        .eq('user_id', user.id)
-        .in('template_id', templateIds)
-        .not('template_id', 'is', null)
-        .order('created_at', { ascending: false });
-
-      if (tasksError) throw tasksError;
+      // Note: Learning templates endpoint needs to be implemented in Django
+      // For now, create a mock template structure
+      const templates = templateIds.map(id => ({
+        id,
+        name: `Template ${id}`,
+        description: '',
+        technology: ''
+      }));
 
       // Combine templates with their tasks, transforming calendar_events to TemplateTask format
       const templatesWithTasksData: TemplateWithTasks[] = (templates || []).map(template => ({
@@ -140,15 +110,10 @@ function UserTemplateTasks() {
   const updateTaskStatus = async (taskId: string, newStatus: string) => {
     try {
       const completed = newStatus === 'completed';
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({ 
-          completed: completed,
-          completed_at: completed ? new Date().toISOString() : null 
-        })
-        .eq('id', taskId);
-
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${taskId}/`, { 
+        completed: completed,
+        completed_at: completed ? new Date().toISOString() : null 
+      });
       
       toast.success('Task status updated');
       fetchUserTemplateTasks();
@@ -162,11 +127,7 @@ function UserTemplateTasks() {
 
     try {
       // Get current task to append to existing notes
-      const { data: currentTask } = await supabase
-        .from('calendar_events')
-        .select('notes')
-        .eq('id', taskId)
-        .single();
+      const currentTask = await apiClient.get<any>(`/calendar/events/${taskId}/`);
 
       const currentNotes = currentTask?.notes || "";
       
@@ -175,12 +136,7 @@ function UserTemplateTasks() {
         ? `${currentNotes}\n\n${newNote}`
         : newNote;
 
-      const { error } = await supabase
-        .from('calendar_events')
-        .update({ notes: updatedNotes })
-        .eq('id', taskId);
-
-      if (error) throw error;
+      await apiClient.patch(`/calendar/events/${taskId}/`, { notes: updatedNotes });
       
       toast.success('Progress note added');
       fetchUserTemplateTasks();

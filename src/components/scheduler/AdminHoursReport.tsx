@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { supabase } from "@/integrations/supabase/client";
+// Supabase removed - using Django API
 import { format, parseISO, startOfWeek, endOfWeek, startOfMonth, endOfMonth, subMonths } from "date-fns";
 import { toast } from "sonner";
 
@@ -37,11 +37,10 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
   useEffect(() => {
     const fetchDepartments = async () => {
       if (!companyId) return;
-      const { data } = await supabase
-        .from('departments')
-        .select('*')
-        .eq('company_id', companyId);
-      setDepartments(data || []);
+      const departments = await apiClient.get<any[]>('/scheduler/departments/', {
+        company: companyId
+      });
+      setDepartments(departments);
     };
     fetchDepartments();
   }, [companyId]);
@@ -50,12 +49,11 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
   useEffect(() => {
     const fetchEmployees = async () => {
       if (!companyId) return;
-      const { data } = await supabase
-        .from('employees')
-        .select('*')
-        .eq('company_id', companyId)
-        .eq('status', 'active');
-      setEmployees(data || []);
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+        company: companyId,
+        status: 'active'
+      });
+      setEmployees(employees);
     };
     fetchEmployees();
   }, [companyId]);
@@ -93,39 +91,32 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
           end = endOfWeek(now, { weekStartsOn: 1 });
       }
 
-      let query = supabase
-        .from('time_clock')
-        .select(`
-          *,
-          employees!inner(
-            id,
-            first_name,
-            last_name,
-            email,
-            company_id,
-            department_id,
-            position,
-            hourly_rate
-          )
-        `)
-        .eq('employees.company_id', companyId)
-        .gte('clock_in', start.toISOString())
-        .lte('clock_in', end.toISOString())
-        .order('clock_in', { ascending: false });
-
+      let entries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+        clock_in__gte: start.toISOString(),
+        clock_in__lte: end.toISOString()
+      });
+      
+      // Filter by company and department
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+        company: companyId
+      });
+      const employeeIds = employees.map((e: any) => e.id);
+      entries = entries.filter((e: any) => employeeIds.includes(e.employee));
+      
       if (selectedDepartment !== 'all') {
-        query = query.eq('employees.department_id', selectedDepartment);
+        const deptEmployeeIds = employees
+          .filter((e: any) => e.department === selectedDepartment)
+          .map((e: any) => e.id);
+        entries = entries.filter((e: any) => deptEmployeeIds.includes(e.employee));
       }
-
-      const { data, error } = await query;
-
-      if (!error) {
-        let filteredData = data || [];
-        if (selectedEmployee !== 'all') {
-          filteredData = filteredData.filter(e => e.employee_id === selectedEmployee);
-        }
-        setEntries(filteredData);
+      
+      if (selectedEmployee !== 'all') {
+        entries = entries.filter((e: any) => e.employee === selectedEmployee);
       }
+      
+      setEntries(entries.sort((a: any, b: any) => 
+        new Date(b.clock_in || 0).getTime() - new Date(a.clock_in || 0).getTime()
+      ));
       setLoading(false);
     };
 

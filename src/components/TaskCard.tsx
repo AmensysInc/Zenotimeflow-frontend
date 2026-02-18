@@ -10,7 +10,8 @@ import { CheckSquare, Clock, Flag, MessageCircle, User, Edit, Trash2, Calendar, 
 import { TaskChat } from "@/components/TaskChat";
 import { TaskNotes } from "@/components/TaskNotes";
 import { format } from "date-fns";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
+import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 
 interface TaskCardProps {
@@ -79,30 +80,33 @@ export const TaskCard = ({
   const [activeWorkSession, setActiveWorkSession] = useState<any>(null);
   const [isStartingWork, setIsStartingWork] = useState(false);
 
+  const { user: authUser } = useAuth();
+  
   // Get current user and active work session
   useEffect(() => {
     const getCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setCurrentUser(user);
-      
-      if (user) {
-        // Check for active work session
-        const { data: sessions } = await supabase
-          .from('task_work_sessions')
-          .select('*')
-          .eq('task_id', task.id)
-          .eq('user_id', user.id)
-          .is('end_time', null)
-          .order('start_time', { ascending: false })
-          .limit(1);
+      if (authUser) {
+        setCurrentUser(authUser);
         
-        if (sessions && sessions.length > 0) {
-          setActiveWorkSession(sessions[0]);
+        // Check for active work session (if work sessions endpoint exists)
+        try {
+          const sessions = await apiClient.get<any[]>('/tasks/work-sessions/', {
+            task: task.id,
+            user: authUser.id,
+            active: true
+          });
+          
+          if (sessions && sessions.length > 0) {
+            setActiveWorkSession(sessions[0]);
+          }
+        } catch (error) {
+          // Work sessions endpoint may not exist yet
+          console.log('Work sessions not available');
         }
       }
     };
     getCurrentUser();
-  }, [task.id]);
+  }, [task.id, authUser]);
 
   // Check if this is a template task that shouldn't be edited by users
   const isTemplateTask = task.template_id !== null;
@@ -126,48 +130,46 @@ export const TaskCard = ({
   };
 
   const handleFileUpload = async (file: File): Promise<string> => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('User not authenticated');
+    if (!authUser) throw new Error('User not authenticated');
 
-    // Create a unique file path
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+    // Upload file to Django backend
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('task_id', task.id);
     
-    // Upload file to Supabase storage
-    const { data, error } = await supabase.storage
-      .from('task-attachments')
-      .upload(fileName, file);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/tasks/attachments/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiClient.getToken()}`
+        },
+        body: formData
+      });
 
-    if (error) {
+      if (!response.ok) {
+        throw new Error('Upload failed');
+      }
+
+      const result = await response.json();
+      const fileUrl = result.url || result.file_url;
+      
+      setFiles(prev => [...prev, fileUrl]);
+      return fileUrl;
+    } catch (error: any) {
       throw new Error(`Upload failed: ${error.message}`);
     }
-
-    // Get public URL for the file
-    const { data: { publicUrl } } = supabase.storage
-      .from('task-attachments')
-      .getPublicUrl(fileName);
-
-    setFiles(prev => [...prev, publicUrl]);
-    return publicUrl;
   };
 
   const handleFileRemove = async (fileUrl: string) => {
-    // Extract file path from URL to delete from storage
+    // Delete file from Django backend
     try {
+      // Extract file ID or path from URL
       const urlParts = fileUrl.split('/');
-      const fileName = urlParts[urlParts.length - 1];
-      const userFolder = urlParts[urlParts.length - 2];
-      const filePath = `${userFolder}/${fileName}`;
+      const fileId = urlParts[urlParts.length - 1];
       
-      const { error } = await supabase.storage
-        .from('task-attachments')
-        .remove([filePath]);
-
-      if (error) {
-        console.error('Error deleting file:', error);
-      }
+      await apiClient.delete(`/tasks/attachments/${fileId}/`);
     } catch (error) {
-      console.error('Error parsing file URL for deletion:', error);
+      console.error('Error deleting file:', error);
     }
     
     setFiles(prev => prev.filter(f => f !== fileUrl));
@@ -207,17 +209,11 @@ export const TaskCard = ({
     try {
       const location = await getLocation();
       
-      const { data, error } = await supabase
-        .from('task_work_sessions')
-        .insert({
-          task_id: task.id,
-          user_id: currentUser.id,
-          start_location: location,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await apiClient.post('/tasks/work-sessions/', {
+        task: task.id,
+        user: currentUser.id,
+        start_location: location,
+      });
       
       setActiveWorkSession(data);
       toast.success('Work session started! Location tracked.');
@@ -240,15 +236,10 @@ export const TaskCard = ({
     try {
       const location = await getLocation();
       
-      const { error } = await supabase
-        .from('task_work_sessions')
-        .update({
-          end_time: new Date().toISOString(),
-          end_location: location,
-        })
-        .eq('id', activeWorkSession.id);
-
-      if (error) throw error;
+      await apiClient.patch(`/tasks/work-sessions/${activeWorkSession.id}/`, {
+        end_time: new Date().toISOString(),
+        end_location: location,
+      });
       
       setActiveWorkSession(null);
       toast.success('Work session completed! Location tracked.');

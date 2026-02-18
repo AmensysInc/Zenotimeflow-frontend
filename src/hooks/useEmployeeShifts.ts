@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/api-client";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, parseISO, isToday as checkIsToday } from "date-fns";
 
 interface Shift {
@@ -34,11 +34,8 @@ export const useEmployeeShifts = () => {
 
     try {
       // Get employee record
-      const { data: employee } = await supabase
-        .from('employees')
-        .select('id, company_id')
-        .eq('user_id', user.id)
-        .single();
+      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+      const employee = employees?.[0];
 
       if (!employee) {
         setIsLoading(false);
@@ -46,27 +43,17 @@ export const useEmployeeShifts = () => {
       }
 
       setEmployeeId(employee.id);
-      setCompanyId(employee.company_id);
+      setCompanyId(employee.company?.id || employee.company_id);
 
       // Default to this week if no dates provided
       const start = startDate || startOfWeek(new Date(), { weekStartsOn: 1 });
       const end = endDate || endOfWeek(new Date(), { weekStartsOn: 1 });
 
-      const { data: shiftsData, error } = await supabase
-        .from('shifts')
-        .select(`
-          *,
-          employees (
-            first_name,
-            last_name
-          )
-        `)
-        .eq('employee_id', employee.id)
-        .gte('start_time', start.toISOString())
-        .lte('start_time', end.toISOString())
-        .order('start_time', { ascending: true });
-
-      if (error) throw error;
+      const shiftsData = await apiClient.get<Shift[]>('/scheduler/shifts/', {
+        employee: employee.id,
+        start_date: start.toISOString(),
+        end_date: end.toISOString()
+      });
 
       setShifts(shiftsData || []);
 
@@ -92,21 +79,11 @@ export const useEmployeeShifts = () => {
       const start = startDate || startOfWeek(new Date(), { weekStartsOn: 1 });
       const end = endDate || endOfWeek(new Date(), { weekStartsOn: 1 });
 
-      const { data, error } = await supabase
-        .from('shifts')
-        .select(`
-          *,
-          employees (
-            first_name,
-            last_name
-          )
-        `)
-        .eq('company_id', companyId)
-        .gte('start_time', start.toISOString())
-        .lte('start_time', end.toISOString())
-        .order('start_time', { ascending: true });
-
-      if (error) throw error;
+      const data = await apiClient.get<Shift[]>('/scheduler/shifts/', {
+        company: companyId,
+        start_date: start.toISOString(),
+        end_date: end.toISOString()
+      });
 
       return data || [];
     } catch (error) {
