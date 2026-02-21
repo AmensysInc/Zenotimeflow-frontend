@@ -12,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCompanies, useDepartments, useEmployees, useShifts, Shift, Employee } from "@/hooks/useSchedulerDatabase";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useCompanyEmployeeNames } from "@/hooks/useCompanyEmployeeNames";
 import { useEmployeeAvailability, AvailabilityStatus } from "@/hooks/useEmployeeAvailability";
@@ -65,6 +66,7 @@ export default function SchedulerSchedule() {
   const [showSlotEditModal, setShowSlotEditModal] = useState(false);
   const [editingSlot, setEditingSlot] = useState<{ id: string; name: string; time: string; startHour: number; endHour: number } | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [roleLoading, setRoleLoading] = useState(true);
   const [showSaveScheduleModal, setShowSaveScheduleModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<{ id: string; name: string; description: string | null } | null>(null);
   const [savedSchedulesRefresh, setSavedSchedulesRefresh] = useState(0);
@@ -104,8 +106,9 @@ export default function SchedulerSchedule() {
     return start;
   }, [selectedWeek, customEndDate]);
   
-  // Database hooks - only pass company ID when valid
-  const { companies, loading: companiesLoading, refetch: refetchCompanies } = useCompanies();
+  // Database hooks - only pass company ID when valid. For manager, fetch companies by company_manager so their company is included.
+  const managerCompanyFilter = userRole === 'manager' && user ? user.id : undefined;
+  const { companies, loading: companiesLoading, refetch: refetchCompanies } = useCompanies(managerCompanyFilter);
   const { departments, loading: departmentsLoading } = useDepartments(isValidCompanySelected ? selectedCompany : undefined);
   const { employees, loading: employeesLoading, updateEmployee, deleteEmployee, refetch: refetchEmployees } = useEmployees(isValidCompanySelected ? selectedCompany : undefined);
   const customWeekEnd = React.useMemo(() => customEndDate || undefined, [customEndDate]);
@@ -181,62 +184,70 @@ export default function SchedulerSchedule() {
   }, [employeeNamesById, fallbackNamesById, shifts, user]);
   // Fetch organizations for super admin
   useEffect(() => {
+    if (userRole !== 'super_admin') return;
+
     const fetchOrganizations = async () => {
-      const organizations = await apiClient.get<any[]>('/scheduler/organizations/');
-      setOrganizations(organizations.sort((a: any, b: any) => 
-        (a.name || '').localeCompare(b.name || '')
-      ));
+      try {
+        const raw = await apiClient.get<any>('/scheduler/organizations/');
+        const list = ensureArray(raw).map((o: any) => ({
+          id: String(o.id ?? o.pk ?? ''),
+          name: String(o.name ?? '')
+        })).filter((o) => o.id && o.name);
+        setOrganizations(list.sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      } catch (err) {
+        console.error('Failed to load organizations:', err);
+        setOrganizations([]);
+      }
     };
 
-    if (userRole === 'super_admin') {
-      fetchOrganizations();
-    }
+    fetchOrganizations();
   }, [userRole]);
 
   // Fetch user role for access control
   useEffect(() => {
     const fetchUserRole = async () => {
-      if (!user) return;
-      
-      const userData = await apiClient.getCurrentUser() as any;
-      const roles = userData?.roles || [];
-      const roleList = roles.map((r: any) => r.role);
-      
-      let computedRole: string = 'user';
-      if (roleList.length > 0) {
-        if (roleList.includes('super_admin')) {
-          computedRole = 'super_admin';
-        } else if (roleList.includes('operations_manager')) {
-          computedRole = 'operations_manager';
-        } else if (roleList.includes('manager')) {
-          computedRole = 'manager';
-        } else if (roleList.includes('employee') || roleList.includes('house_keeping') || roleList.includes('maintenance')) {
-          // All operational staff (employee, house_keeping, maintenance) are treated the same
-          computedRole = 'employee';
-        } else {
-          computedRole = 'user';
-        }
+      if (!user) {
+        setRoleLoading(false);
+        return;
       }
-
-      setUserRole(computedRole);
-      
-      // Also check if user is an employee
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-      const empData = employees && employees.length > 0 ? employees[0] : null;
-      
-      if (empData) {
-        setEmployeeRecord(empData);
-
-        // Fallback: if the user has an employee record but no explicit 'employee' role
-        // in user_roles, treat them as employee for schedule display purposes.
-        if (computedRole === 'user') {
-          setUserRole('employee');
+      setRoleLoading(true);
+      try {
+        const userData = await apiClient.getCurrentUser() as any;
+        const roles = userData?.roles || [];
+        const roleList = roles.map((r: any) => r.role);
+        
+        let computedRole: string = 'user';
+        if (roleList.length > 0) {
+          if (roleList.includes('super_admin')) {
+            computedRole = 'super_admin';
+          } else if (roleList.includes('operations_manager')) {
+            computedRole = 'operations_manager';
+          } else if (roleList.includes('manager')) {
+            computedRole = 'manager';
+          } else if (roleList.includes('employee') || roleList.includes('house_keeping') || roleList.includes('maintenance')) {
+            computedRole = 'employee';
+          } else {
+            computedRole = 'user';
+          }
         }
 
-        // Auto-select employee's company
-        if (!selectedCompany) {
-          setSelectedCompany(empData.company_id);
+        setUserRole(computedRole);
+        
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+        const empData = employees && employees.length > 0 ? employees[0] : null;
+        
+        if (empData) {
+          setEmployeeRecord(empData);
+          if (computedRole === 'user') {
+            setUserRole('employee');
+          }
+          const companyId = empData.company_id ?? (typeof empData.company === 'string' ? empData.company : empData.company?.id);
+          if (companyId && !selectedCompany) {
+            setSelectedCompany(companyId);
+          }
         }
+      } finally {
+        setRoleLoading(false);
       }
     };
 
@@ -306,13 +317,12 @@ export default function SchedulerSchedule() {
 
   // Filter companies based on user role and access
   const availableCompanies = companies.filter(company => {
-    // Super admins: companies only show AFTER selecting an organization
+    // Super admins: show all companies, optionally filter by organization if selected
     if (userRole === 'super_admin') {
-      // Only show companies if organization is selected
-      if (!selectedOrganization) {
-        return false;
+      if (selectedOrganization && selectedOrganization !== 'all') {
+        return company.organization_id === selectedOrganization;
       }
-      return company.organization_id === selectedOrganization;
+      return true; // Show all companies if no org filter
     }
     
     // Operations managers can see companies they manage
@@ -320,9 +330,10 @@ export default function SchedulerSchedule() {
       return company.operations_manager_id === user?.id;
     }
     
-    // Company managers can see only their assigned company
+    // Company managers can see only their assigned company (backend may return company_manager or company_manager_id)
     if (userRole === 'manager') {
-      return company.company_manager_id === user?.id;
+      const managerId = company.company_manager_id ?? (company as any).company_manager;
+      return managerId === user?.id;
     }
     
     // Employees can see their company's schedule
@@ -362,13 +373,16 @@ export default function SchedulerSchedule() {
           const shiftStartTime = new Date(shift.start_time);
           const shiftCreatedAt = new Date(shift.created_at);
           if (shiftCreatedAt > shiftStartTime) continue;
-          
-          const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+          const assignedEmployeeId = shift.employee_id ?? (typeof shift.employee === 'string' ? shift.employee : shift.employee?.id);
+          if (!assignedEmployeeId) continue;
+          // Only mark missed if the assigned employee has no clock-in for this shift (not someone else)
+          const rawClock = await apiClient.get<any>('/scheduler/time-clock/', {
             shift: shift.id,
+            employee: assignedEmployeeId,
             clock_in__isnull: false
           });
-          
-          if (!clockEntries || clockEntries.length === 0) {
+          const clockEntries = ensureArray(rawClock);
+          if (clockEntries.length === 0) {
             await apiClient.patch(`/scheduler/shifts/${shift.id}/`, { 
               is_missed: true, 
               missed_at: now.toISOString(),
@@ -401,11 +415,26 @@ export default function SchedulerSchedule() {
   }, [selectedOrganization, userRole, availableCompanies]);
 
   // Auto-select the first company if none is selected (and employee hasn't auto-selected theirs)
+  // For employee, prefer their company from employeeRecord so schedule works even if companies list doesn't include it yet
   useEffect(() => {
-    if (schedulableCompanies.length > 0 && !selectedCompany) {
+    if (isEmployeeView && employeeRecord?.company_id) {
+      const cid = employeeRecord.company_id ?? (employeeRecord as any).company;
+      if (cid && selectedCompany !== cid) {
+        setSelectedCompany(typeof cid === 'string' ? cid : (cid?.id ?? cid));
+      }
+    } else if (schedulableCompanies.length > 0 && !selectedCompany) {
       setSelectedCompany(schedulableCompanies[0].id);
     }
-  }, [schedulableCompanies, selectedCompany]);
+  }, [isEmployeeView, employeeRecord, schedulableCompanies, selectedCompany]);
+
+  // Manager: ensure we have their company selected (single company, no dropdown needed)
+  const isManagerView = userRole === 'manager';
+  const managerCompany = isManagerView && schedulableCompanies.length > 0 ? schedulableCompanies[0] : null;
+  useEffect(() => {
+    if (isManagerView && managerCompany && selectedCompany !== managerCompany.id) {
+      setSelectedCompany(managerCompany.id);
+    }
+  }, [isManagerView, managerCompany, selectedCompany]);
 
   // No need for manual refetch - hooks handle company changes internally
 
@@ -1188,26 +1217,31 @@ export default function SchedulerSchedule() {
     }
 
     try {
-      const shiftIds = shifts.map(s => s.id);
-      
-      // Unlink all time clock entries at once
-      const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
-        shift__in: shiftIds.join(',')
-      });
-      await Promise.all(clockEntries.map((entry: any) => 
-        apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
-      ));
-      
-      // Delete all shifts at once
-      await Promise.all(shiftIds.map((id: string) => 
-        apiClient.delete(`/scheduler/shifts/${id}/`)
-      ));
-      
+      const shiftIds = shifts.map(s => s.id).filter((id): id is string => id != null && id !== '');
+      if (shiftIds.length === 0) {
+        toast({
+          title: "No Shifts",
+          description: "There are no shifts to clear for this week.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // For each shift: unlink time-clock entries (backend may not support shift__in), then delete shift
+      for (const id of shiftIds) {
+        const rawClock = await apiClient.get<any>('/scheduler/time-clock/', { shift: id });
+        const clockEntries = ensureArray(rawClock);
+        await Promise.all(clockEntries.map((entry: any) =>
+          apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
+        ));
+        await apiClient.delete(`/scheduler/shifts/${id}/`);
+      }
+
       setShowScheduleShifts(false);
-      
+
       // Refresh shifts from database to clear stale state
       await refetchShifts();
-      
+
       toast({
         title: "Week Cleared",
         description: "All shifts for this week have been removed."
@@ -1307,10 +1341,9 @@ export default function SchedulerSchedule() {
 
     try {
       for (const shift of dayShifts) {
-        const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
-          shift: shift.id
-        });
-        await Promise.all(clockEntries.map((entry: any) => 
+        const rawClock = await apiClient.get<any>('/scheduler/time-clock/', { shift: shift.id });
+        const clockEntries = ensureArray(rawClock);
+        await Promise.all(clockEntries.map((entry: any) =>
           apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
         ));
         await deleteShift(shift.id);
@@ -1382,22 +1415,33 @@ export default function SchedulerSchedule() {
               </Select>
             )}
 
-            {/* Company dropdown */}
-            <Select value={selectedCompany} onValueChange={(value) => {
-              setSelectedCompany(value);
-              setSelectedDepartment("all");
-            }}>
-              <SelectTrigger className="w-[180px] bg-background">
-                <SelectValue placeholder="Select company" />
-              </SelectTrigger>
-              <SelectContent className="bg-popover border shadow-lg z-50">
-                {schedulableCompanies.map((company) => (
-                  <SelectItem key={company.id} value={company.id}>
-                    {company.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Company: for manager show fixed badge (no dropdown); for super_admin show only after org selected; for others show dropdown */}
+            {isManagerView && managerCompany ? (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-muted/50">
+                <Building className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">{managerCompany.name}</span>
+              </div>
+            ) : userRole === 'super_admin' && !selectedOrganization ? (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-dashed bg-muted/30 text-muted-foreground w-[180px] text-sm">
+                Select organization first
+              </div>
+            ) : (
+              <Select value={selectedCompany} onValueChange={(value) => {
+                setSelectedCompany(value);
+                setSelectedDepartment("all");
+              }}>
+                <SelectTrigger className="w-[180px] bg-background">
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border shadow-lg z-50">
+                  {schedulableCompanies.map((company) => (
+                    <SelectItem key={company.id} value={company.id}>
+                      {company.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
 
             {/* Department dropdown */}
             {selectedCompany && departments.length > 0 && (
@@ -1419,9 +1463,51 @@ export default function SchedulerSchedule() {
         )}
       </div>
 
-      {/* Main Connecteam-Style Grid - All teams shown together with color coding */}
-      <div className="flex-1 p-4 overflow-hidden print-schedule">
-        <ConnecteamScheduleGrid
+      {/* Loading role: avoid showing "No Companies Available" before we know manager has a company */}
+      {roleLoading ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="flex flex-col items-center gap-3">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary" />
+            <p className="text-sm text-muted-foreground">Loading schedule...</p>
+          </div>
+        </div>
+      ) : !isEmployeeView && schedulableCompanies.length === 0 && !companiesLoading ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center">
+            <Building className="h-16 w-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+            <h3 className="text-lg font-medium mb-2">No Companies Available</h3>
+            <p className="text-muted-foreground">
+              {userRole === 'super_admin'
+                ? "No companies found. Please create a company first."
+                : "You don't have access to any companies. Please contact your administrator."}
+            </p>
+          </div>
+        </div>
+      ) : isEmployeeView && !employeeRecord && !roleLoading ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center">
+            <Building className="h-16 w-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+            <h3 className="text-lg font-medium mb-2">No employee record</h3>
+            <p className="text-muted-foreground">
+              Your account is not linked to an employee record. Contact your administrator to view the schedule.
+            </p>
+          </div>
+        </div>
+      ) : !isValidCompanySelected && !isEmployeeView ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="text-center">
+            <Building className="h-16 w-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+            <h3 className="text-lg font-medium mb-2">Select a Company</h3>
+            <p className="text-muted-foreground">
+              Please select a company from the dropdown above to view and manage schedules.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <>
+        {/* Main Connecteam-Style Grid - All teams shown together with color coding */}
+        <div className="flex-1 p-4 overflow-hidden print-schedule">
+          <ConnecteamScheduleGrid
           employees={(isEmployeeView ? allCompanyEmployees : employees).filter(e => {
             // Filter by department only - no team filtering, show all together
             const deptMatch = selectedDepartment === "all" || e.department_id === selectedDepartment;
@@ -1465,43 +1551,63 @@ export default function SchedulerSchedule() {
           isEmployeeView={isEmployeeView}
           currentEmployeeId={employeeRecord?.id}
           onCreateShiftDirect={async (employeeId, dayIndex, startTime, endTime) => {
-            const employee = employees.find(e => e.id === employeeId);
-            const date = weekDates[dayIndex];
-            const [startH, startM] = startTime.split(':').map(Number);
-            const [endH, endM] = endTime.split(':').map(Number);
-            const startDateTime = new Date(date);
-            startDateTime.setHours(startH, startM, 0, 0);
-            const endDateTime = new Date(date);
-            endDateTime.setHours(endH, endM, 0, 0);
-            if (endH < startH) endDateTime.setDate(endDateTime.getDate() + 1);
-            await createShift({
-              employee_id: employeeId,
-              company_id: selectedCompany,
-              department_id: selectedDepartment !== "all" ? selectedDepartment : employee?.department_id || undefined,
-              team_id: employee?.team_id || undefined,
-              start_time: startDateTime.toISOString(),
-              end_time: endDateTime.toISOString(),
-              break_minutes: 30,
-              hourly_rate: employee?.hourly_rate || undefined,
-              status: 'scheduled'
-            });
-            setShowScheduleShifts(true);
-          }}
-        />
-      </div>
-
-      {/* Saved Schedules Section */}
-      {canManageShifts && selectedCompany && (
-        <div className="mt-6">
-          <SavedSchedulesCard
-            companyId={selectedCompany}
-            onLoadSchedule={handleLoadSchedule}
-            onEditSchedule={handleEditSavedSchedule}
-            onCopyToCurrentWeek={handleCopyScheduleToCurrentWeek}
-            currentWeekLabel={`${weekDates[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${weekDates[weekDates.length - 1].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
-            refreshTrigger={savedSchedulesRefresh}
+            if (!selectedCompany) {
+              toast({ title: "Error", description: "No company selected.", variant: "destructive" });
+              return;
+            }
+            if (!employeeId || !startTime || !endTime) {
+              toast({ title: "Error", description: "Please select an employee and set shift times.", variant: "destructive" });
+              return;
+            }
+            try {
+              const employee = employees.find(e => e.id === employeeId);
+              const date = weekDates[dayIndex];
+              const [startH, startM] = startTime.split(':').map(Number);
+              const [endH, endM] = endTime.split(':').map(Number);
+              const startDateTime = new Date(date);
+              startDateTime.setHours(startH, startM, 0, 0);
+              const endDateTime = new Date(date);
+              endDateTime.setHours(endH, endM, 0, 0);
+              if (endH < startH || (endH === startH && endM <= startM)) endDateTime.setDate(endDateTime.getDate() + 1);
+              await createShift({
+                employee_id: employeeId,
+                company_id: selectedCompany,
+                department_id: selectedDepartment !== "all" ? selectedDepartment : employee?.department_id || undefined,
+                team_id: employee?.team_id || undefined,
+                start_time: startDateTime.toISOString(),
+                end_time: endDateTime.toISOString(),
+                break_minutes: 30,
+                hourly_rate: employee?.hourly_rate || undefined,
+                status: 'scheduled'
+              });
+              setShowScheduleShifts(true);
+              await refetchShifts();
+            } catch (err) {
+              toast({
+                title: "Error",
+                description: "Failed to create shift. Please try again.",
+                variant: "destructive"
+              });
+              throw err;
+            }
+            }}
           />
-        </div>
+          </div>
+
+          {/* Saved Schedules Section */}
+          {canManageShifts && selectedCompany && (
+            <div className="mt-6">
+              <SavedSchedulesCard
+                companyId={selectedCompany}
+                onLoadSchedule={handleLoadSchedule}
+                onEditSchedule={handleEditSavedSchedule}
+                onCopyToCurrentWeek={handleCopyScheduleToCurrentWeek}
+                currentWeekLabel={`${weekDates[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${weekDates[weekDates.length - 1].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
+                refreshTrigger={savedSchedulesRefresh}
+              />
+            </div>
+          )}
+        </>
       )}
 
       {/* Modals */}
@@ -1582,16 +1688,17 @@ export default function SchedulerSchedule() {
           shift={missedShiftToRequest}
           employeeId={employeeRecord.id}
           onClose={() => setMissedShiftToRequest(null)}
-          onSuccess={() => {
-            // Refresh pending requests
-            supabase
-              .from('shift_replacement_requests')
-              .select('shift_id')
-              .eq('replacement_employee_id', employeeRecord.id)
-              .eq('status', 'pending')
-              .then(({ data }) => {
-                setMyPendingRequests(data?.map(r => r.shift_id) || []);
+          onSuccess={async () => {
+            // Refresh pending requests via Django API
+            try {
+              const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+                replacement_employee: employeeRecord.id,
+                status: 'pending'
               });
+              setMyPendingRequests(Array.isArray(requests) ? requests.map((r: any) => r.shift) : []);
+            } catch {
+              setMyPendingRequests([]);
+            }
           }}
         />
       )}

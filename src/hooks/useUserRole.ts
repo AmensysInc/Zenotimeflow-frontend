@@ -1,16 +1,17 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api-client";
+import type { UserRole } from "@/types/auth";
+
+export type { UserRole };
 
 /**
  * Role Hierarchy:
- * 1. Super Admin - Full access to entire application (all orgs, companies, employees)
- * 2. Organization Manager (operations_manager enum) - Access to assigned organization only
- * 3. Company Manager (manager enum) - Access to assigned company only  
- * 4. Employee - Access to own profile and assigned tasks only
+ * 1. Super Admin - Full access
+ * 2. Organization Manager (operations_manager) - Assigned organization only
+ * 3. Company Manager (manager) - Assigned company only
+ * 4. Employee - Own profile and shifts
  */
-export type UserRole = 'user' | 'admin' | 'super_admin' | 'operations_manager' | 'manager' | 'employee' | 'house_keeping' | 'maintenance';
-
 export const useUserRole = () => {
   const { user } = useAuth();
   const [role, setRole] = useState<UserRole | null>(null);
@@ -28,7 +29,7 @@ export const useUserRole = () => {
       
       // Check if user has roles in the response
       if (userData?.roles && userData.roles.length > 0) {
-        const roles = userData.roles.map((r: any) => r.role as UserRole);
+        const roles = userData.roles.map((r: any) => (r.role ?? r.name) as UserRole);
         setAllRoles(roles);
         
         // Determine primary role based on hierarchy priority

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCompanies } from "@/hooks/useSchedulerDatabase";
+import { formatPhoneUS, parsePhoneUS } from "@/lib/utils";
 import { toast } from "sonner";
 import { Building, Palette, Trash2 } from "lucide-react";
 
@@ -62,7 +63,7 @@ export default function EditCompanyModal({
           type: company.type || "",
           color: company.color || "#3b82f6",
           address: company.address || "",
-          phone: company.phone || "",
+          phone: formatPhoneUS(company.phone) || "",
           email: company.email || ""
         });
       }
@@ -86,7 +87,7 @@ export default function EditCompanyModal({
     setLoading(true);
 
     try {
-      await updateCompany(company.id, formData);
+      await updateCompany(company.id, { ...formData, phone: parsePhoneUS(formData.phone) || undefined });
       
       // Verify the update was successful
       onSuccess();
@@ -193,9 +194,10 @@ export default function EditCompanyModal({
               <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
+                type="tel"
                 value={formData.phone}
-                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                placeholder="Enter phone number"
+                onChange={(e) => setFormData({ ...formData, phone: formatPhoneUS(e.target.value) })}
+                placeholder="(555) 123-4567"
               />
             </div>
 

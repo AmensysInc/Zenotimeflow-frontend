@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCompanies } from "@/hooks/useSchedulerDatabase";
 import apiClient from "@/lib/api-client";
+import { formatPhoneUS, parsePhoneUS } from "@/lib/utils";
 import { toast } from "sonner";
 
 interface CreateCompanyModalProps {
@@ -93,7 +94,7 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
         type: formData.type,
         color: formData.color,
         address: formData.address,
-        phone: formData.phone,
+        phone: parsePhoneUS(formData.phone) || undefined,
         email: formData.email,
         company_manager_id: (formData.company_manager_id && formData.company_manager_id !== "none") ? formData.company_manager_id : null,
         organization_id: formData.organization_id || null
@@ -211,8 +212,9 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
               <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
+                type="tel"
                 value={formData.phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, phone: formatPhoneUS(e.target.value) }))}
                 placeholder="(555) 123-4567"
               />
             </div>

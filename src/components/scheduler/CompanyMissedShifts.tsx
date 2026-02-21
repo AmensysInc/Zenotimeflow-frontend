@@ -3,7 +3,7 @@ import { AlertTriangle, Clock, MapPin, UserCheck, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-// Supabase removed - using Django API
+import apiClient from "@/lib/api-client";
 import { useAuth } from "@/hooks/useAuth";
 import { format, parseISO } from "date-fns";
 import { toast } from "sonner";
@@ -59,24 +59,27 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
     try {
       setLoading(true);
       
-      // Fetch missed shifts from the same company (excluding own shifts)
-      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      // Fetch missed shifts from the same company (only other employees' missed shifts - not own)
+      const raw = await apiClient.get<any>('/scheduler/shifts/', {
         company: companyId,
         is_missed: true,
         replacement_employee__isnull: true
       });
-      const filteredShifts = shifts.filter((s: any) => s.employee !== employeeId);
-      setMissedShifts(filteredShifts.sort((a: any, b: any) => 
+      const shiftsList = Array.isArray(raw) ? raw : (raw?.results ?? []);
+      const filteredShifts = shiftsList.filter((s: any) => {
+        const shiftEmployeeId = s.employee_id ?? (typeof s.employee === 'string' ? s.employee : s.employee?.id);
+        return shiftEmployeeId !== employeeId;
+      });
+      setMissedShifts(filteredShifts.sort((a: any, b: any) =>
         new Date(b.start_time || 0).getTime() - new Date(a.start_time || 0).getTime()
       ));
-      
-      // Fetch my pending requests
-      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+
+      const rawRequests = await apiClient.get<any>('/scheduler/shift-replacement-requests/', {
         replacement_employee: employeeId,
         status: 'pending'
       });
-      
-      setMyRequests(requests.map((r: any) => r.shift));
+      const requests = Array.isArray(rawRequests) ? rawRequests : (rawRequests?.results ?? []);
+      setMyRequests(requests.map((r: any) => r.shift ?? r.shift_id));
     } catch (error) {
       console.error('Error fetching missed shifts:', error);
     } finally {
@@ -110,14 +113,12 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
       // Create replacement request
       await apiClient.post('/scheduler/shift-replacement-requests/', {
         shift: selectedShift.id,
-        original_employee: selectedShift.employee,
+        original_employee: selectedShift.employee_id ?? selectedShift.employee,
         replacement_employee: employeeId,
-        company: selectedShift.company,
+        company: selectedShift.company_id ?? selectedShift.company,
         status: 'pending'
       });
-      
-      if (error) throw error;
-      
+
       toast.success('Request sent to manager for approval');
       setSelectedShift(null);
       fetchMissedShifts();
@@ -156,7 +157,7 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">
-            These shifts were missed by other employees. Click to request manager approval to cover them.
+            These shifts were missed by other employees from your company. You can request to cover them; only missed shifts by co-workers in the same company are listed. The manager must approve your request before you can clock in.
           </p>
           <div className="space-y-3">
             {missedShifts.map((shift) => (

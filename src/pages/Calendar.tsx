@@ -13,7 +13,7 @@ import { usePersistentTimeClock } from "@/hooks/usePersistentTimeClock";
 import { format, startOfMonth, endOfMonth } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
 import { Clock, Calendar as CalendarIcon, ListTodo } from "lucide-react";
-import { useUserRole } from "@/hooks/useUserRole";
+import { ensureArray } from "@/lib/utils";
 
 interface Shift {
   id: string;
@@ -45,9 +45,8 @@ interface CalendarEvent {
 }
 
 const Calendar = () => {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const { toast } = useToast();
-  const { role, isLoading: roleLoading } = useUserRole();
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [tasks, setTasks] = useState<CalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -55,11 +54,12 @@ const Calendar = () => {
   const [view, setView] = useState<"month" | "week" | "day">("month");
   const [employeeId, setEmployeeId] = useState<string | null>(null);
 
-  // Check user role types
-  const isSuperAdmin = role === 'super_admin';
-  const isOrganizationManager = role === 'operations_manager';
-  const isCompanyManager = role === 'manager';
-  const isEmployee = role === 'employee';
+  // Check user role types (use auth role so we don't block on a second loading state)
+  const r = role ?? 'user';
+  const isSuperAdmin = r === 'super_admin';
+  const isOrganizationManager = r === 'operations_manager';
+  const isCompanyManager = r === 'manager';
+  const isEmployee = r === 'employee' || r === 'house_keeping' || r === 'maintenance';
   const isManager = isCompanyManager || isOrganizationManager;
 
   // Shift notification hook
@@ -76,33 +76,36 @@ const Calendar = () => {
   // Time clock hook to check if already clocked in
   const { activeEntry } = usePersistentTimeClock();
 
-  // Fetch employee ID - only for employees
+  // Fetch employee ID - only for non-admin roles; always clear loading when done
   useEffect(() => {
     const fetchEmployeeId = async () => {
       if (!user || isSuperAdmin || isManager) {
         setIsLoading(false);
         return;
       }
-      
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-      const employee = employees?.[0];
-      
-      if (employee) {
-        setEmployeeId(employee.id);
+      try {
+        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
+        const list = Array.isArray(employees) ? employees : [];
+        const employee = list[0];
+        if (employee?.id) {
+          setEmployeeId(employee.id);
+        }
+      } catch (e) {
+        console.error('Error fetching employee for calendar:', e);
+      } finally {
+        setIsLoading(false);
       }
     };
-    
     fetchEmployeeId();
   }, [user, isSuperAdmin, isManager]);
 
-  // Fetch tasks for managers and employees (tasks assigned to them)
+  // Fetch tasks for managers, employees, and regular users (tasks assigned to them)
   useEffect(() => {
     const fetchAssignedTasks = async () => {
       if (!user || isSuperAdmin) return;
-      // Skip if employee role without employee ID - they see shifts instead
+      // Skip if employee role without employee ID - they see shifts first, tasks load when employeeId exists
       if (isEmployee && !employeeId) return;
-      
-      setIsLoading(true);
+
       try {
         const monthStart = startOfMonth(currentDate);
         const monthEnd = endOfMonth(currentDate);
@@ -114,19 +117,20 @@ const Calendar = () => {
           end_date: monthEnd.toISOString()
         });
 
-        setTasks(data || []);
+        setTasks(Array.isArray(data) ? data : []);
       } catch (error) {
         console.error('Error fetching tasks:', error);
+        setTasks([]);
       } finally {
         setIsLoading(false);
       }
     };
 
-    // Fetch tasks for organization managers, company managers, and employees
-    if (isOrganizationManager || isCompanyManager || isEmployee) {
+    // Fetch tasks for anyone who can see a task calendar (managers, employees with employeeId, or role 'user')
+    if (isOrganizationManager || isCompanyManager || isEmployee || r === 'user') {
       fetchAssignedTasks();
     }
-  }, [user, isOrganizationManager, isCompanyManager, isEmployee, employeeId, currentDate, toast]);
+  }, [user, role, isOrganizationManager, isCompanyManager, isEmployee, employeeId, currentDate, toast]);
 
   // Fetch shifts for the current employee - skip for super_admin and managers
   useEffect(() => {
@@ -142,17 +146,16 @@ const Calendar = () => {
       }
 
       try {
-        // Get date range based on view
         const monthStart = startOfMonth(currentDate);
         const monthEnd = endOfMonth(currentDate);
 
-        const data = await apiClient.get<Shift[]>('/scheduler/shifts/', {
+        const data = await apiClient.get<Shift[] | { results?: Shift[] }>('/scheduler/shifts/', {
           employee: employeeId,
-          start_date: monthStart.toISOString(),
-          end_date: monthEnd.toISOString()
+          start_time__gte: monthStart.toISOString(),
+          start_time__lte: monthEnd.toISOString()
         });
 
-        setShifts(data || []);
+        setShifts(ensureArray(data));
       } catch (error) {
         console.error('Error fetching shifts:', error);
       } finally {
@@ -166,7 +169,8 @@ const Calendar = () => {
   }, [employeeId, currentDate, toast, isSuperAdmin, isManager]);
 
   // Convert shifts to calendar event format (for employees)
-  const shiftEvents: CalendarEvent[] = shifts.map(shift => ({
+  const shiftsList = Array.isArray(shifts) ? shifts : [];
+  const shiftEvents: CalendarEvent[] = shiftsList.map(shift => ({
     id: shift.id,
     title: shift.company?.name || 'Shift',
     description: shift.notes || null,
@@ -182,14 +186,15 @@ const Calendar = () => {
   }));
 
   // Combine shifts and tasks for employees, just tasks for managers
-  // Employees see both their shifts AND their assigned tasks
+  // Ensure we never spread non-array (API may return object or null)
+  const tasksList = Array.isArray(tasks) ? tasks : [];
   const calendarEvents = isEmployee 
-    ? [...shiftEvents, ...tasks] 
-    : (isManager ? tasks : shiftEvents);
+    ? [...shiftEvents, ...tasksList] 
+    : (isManager ? tasksList : shiftEvents);
 
   // Handler for viewing shift details (read-only)
   const handleViewShift = (event: CalendarEvent) => {
-    const shift = shifts.find(s => s.id === event.id);
+    const shift = shiftsList.find(s => s.id === event.id);
     if (shift) {
       toast({
         title: "Shift Details",
@@ -207,7 +212,7 @@ const Calendar = () => {
     // Employees can't create shifts  
   };
 
-  if (isLoading || roleLoading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary"></div>
@@ -215,9 +220,8 @@ const Calendar = () => {
     );
   }
 
-  // Super admin and managers see standard calendar without employee requirement
-  // Non-super admins/managers need an employee record to see shifts
-  if (!isSuperAdmin && !isManager && !employeeId) {
+  // Only employees (operational staff) need an employee record to see shifts
+  if (isEmployee && !employeeId) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-purple-50/30 p-6">
         <Card className="max-w-md mx-auto">

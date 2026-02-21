@@ -4,12 +4,22 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-// Supabase removed - using Django API
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useEmployees, Employee } from "@/hooks/useSchedulerDatabase";
 import { useUserRole } from "@/hooks/useUserRole";
+import apiClient from "@/lib/api-client";
+import { formatPhoneUS } from "@/lib/utils";
 import { toast } from "sonner";
 import { Building, User, UserPlus, Phone, Mail, MapPin, UserCheck, Edit, Trash2, MoreHorizontal, UserMinus } from "lucide-react";
 import AddEmployeeModal from "./AddEmployeeModal";
+import AssignExistingUserModal from "./AssignExistingUserModal";
 import EditEmployeeModal from "./EditEmployeeModal";
 import {
   DropdownMenu,
@@ -24,11 +34,14 @@ interface CompanyDetailModalProps {
   company: any;
 }
 
-interface CompanyManager {
-  user_id: string;
-  full_name: string;
+/** Manager details from API (company.company_manager_details). */
+interface CompanyManagerDetails {
+  id: string;
   email: string;
-  mobile_number?: string;
+  first_name?: string;
+  last_name?: string;
+  full_name?: string;
+  is_active?: boolean;
 }
 
 export default function CompanyDetailModal({ 
@@ -36,58 +49,61 @@ export default function CompanyDetailModal({
   onOpenChange, 
   company 
 }: CompanyDetailModalProps) {
-  const [loading, setLoading] = useState(false);
-  const [companyManager, setCompanyManager] = useState<CompanyManager | null>(null);
   const [showAddEmployee, setShowAddEmployee] = useState(false);
+  const [showAssignExisting, setShowAssignExisting] = useState(false);
   const [showEditEmployee, setShowEditEmployee] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [detailCompany, setDetailCompany] = useState<typeof company | null>(null);
   const { employees, loading: employeesLoading, refetch, updateEmployee, deleteEmployee } = useEmployees(company?.id);
   const { isSuperAdmin, isOrganizationManager, isCompanyManager } = useUserRole();
+
+  // Fetch company detail when modal opens (employees_count, manager from backend)
+  useEffect(() => {
+    if (!open || !company?.id) {
+      setDetailCompany(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiClient.get<any>(`/scheduler/companies/${company.id}/`);
+        if (!cancelled && data) setDetailCompany(data);
+      } catch {
+        setDetailCompany(company);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, company?.id]);
+
+  const displayCompany = detailCompany ?? company;
+  const managerDetails: CompanyManagerDetails | null = displayCompany?.company_manager_details ?? company?.company_manager_details ?? null;
+  const employeeCount = displayCompany?.employees_count ?? employees.length;
 
   // Check if current user can manage employees
   const canManageEmployees = isSuperAdmin || isOrganizationManager || isCompanyManager;
 
   useEffect(() => {
     if (open && company) {
-      fetchCompanyManager();
       refetch();
     }
   }, [open, company]);
 
-  // Listen for new employees being added or edited
+  // Refetch employees when add/assign/edit modals close so list stays in sync
   useEffect(() => {
-    if (open && !showAddEmployee && !showEditEmployee) {
+    if (open && !showAddEmployee && !showAssignExisting && !showEditEmployee) {
       refetch();
     }
-  }, [showAddEmployee, showEditEmployee]);
-
-  const fetchCompanyManager = async () => {
-    if (!company?.company_manager_id) {
-      setCompanyManager(null);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const userData = await apiClient.get<any>(`/auth/users/${company.company_manager_id}/`);
-      setCompanyManager({
-        user_id: userData.id,
-        full_name: userData.profile?.full_name || '',
-        email: userData.email || '',
-        mobile_number: userData.profile?.mobile_number || ''
-      });
-    } catch (error) {
-      console.error('Error fetching company manager:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [showAddEmployee, showAssignExisting, showEditEmployee]);
 
   const handleEmployeeSuccess = () => {
     setShowAddEmployee(false);
-    toast.success("Employee added successfully!");
-    // Employees will be refetched automatically when modal closes
+    setShowAssignExisting(false);
+    setTimeout(() => refetch(), 0);
   };
+
+  const existingEmployeeUserIds = (employees || [])
+    .map((e) => e.user_id)
+    .filter((id): id is string => Boolean(id));
 
   const handleEditEmployee = (employee: Employee) => {
     setSelectedEmployee(employee);
@@ -128,6 +144,7 @@ export default function CompanyDetailModal({
 
   if (!company) return null;
 
+  const headerCompany = displayCompany ?? company;
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -137,25 +154,31 @@ export default function CompanyDetailModal({
               <div className="flex items-center gap-3">
                 <div 
                   className="w-12 h-12 rounded-lg flex items-center justify-center"
-                  style={{ backgroundColor: company.color || '#3b82f6' }}
+                  style={{ backgroundColor: headerCompany.color || '#3b82f6' }}
                 >
                   <Building className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-2xl font-bold">{company.name}</h2>
+                  <h2 className="text-2xl font-bold">{headerCompany.name}</h2>
                   <div className="flex items-center gap-2 mt-1">
-                    <Badge variant="secondary">{company.type}</Badge>
-                    <Badge variant={company.field_type === 'IT' ? 'default' : 'secondary'}>
-                      {company.field_type}
+                    <Badge variant="secondary">{headerCompany.type}</Badge>
+                    <Badge variant={headerCompany.field_type === 'IT' ? 'default' : 'secondary'}>
+                      {headerCompany.field_type}
                     </Badge>
                   </div>
                 </div>
               </div>
               {canManageEmployees && (
-                <Button onClick={() => setShowAddEmployee(true)}>
-                  <UserPlus className="w-4 h-4 mr-2" />
-                  Add Employee
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setShowAssignExisting(true)}>
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Assign existing user
+                  </Button>
+                  <Button onClick={() => setShowAddEmployee(true)}>
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Add new employee
+                  </Button>
+                </div>
               )}
             </DialogTitle>
           </DialogHeader>
@@ -167,28 +190,28 @@ export default function CompanyDetailModal({
                 <CardTitle className="text-lg">Company Details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {company.address && (
+                {headerCompany.address && (
                   <div className="flex items-start gap-2 text-sm">
                     <MapPin className="w-4 h-4 mt-0.5 text-muted-foreground" />
-                    <span>{company.address}</span>
+                    <span>{headerCompany.address}</span>
                   </div>
                 )}
-                {company.phone && (
+                {headerCompany.phone && (
                   <div className="flex items-center gap-2 text-sm">
                     <Phone className="w-4 h-4 text-muted-foreground" />
-                    <span>{company.phone}</span>
+                    <span>{formatPhoneUS(headerCompany.phone)}</span>
                   </div>
                 )}
-                {company.email && (
+                {headerCompany.email && (
                   <div className="flex items-center gap-2 text-sm">
                     <Mail className="w-4 h-4 text-muted-foreground" />
-                    <span>{company.email}</span>
+                    <span>{headerCompany.email}</span>
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            {/* Company Manager */}
+            {/* Company Manager - details from API (company_manager_details) */}
             <Card className="lg:col-span-2">
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
@@ -197,29 +220,24 @@ export default function CompanyDetailModal({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {loading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-                  </div>
-                ) : companyManager ? (
+                {managerDetails ? (
                   <div className="flex items-center gap-4">
                     <Avatar className="h-12 w-12">
                       <AvatarFallback>
-                        {companyManager.full_name?.split(' ').map(n => n[0]).join('') || 'M'}
+                        {(managerDetails.full_name || managerDetails.email || 'M').slice(0, 2).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
                     <div>
-                      <h3 className="font-semibold">{companyManager.full_name}</h3>
+                      <h3 className="font-semibold">{managerDetails.full_name || [managerDetails.first_name, managerDetails.last_name].filter(Boolean).join(' ') || managerDetails.email}</h3>
                       <div className="flex flex-col gap-1 text-sm text-muted-foreground">
                         <span className="flex items-center gap-1">
                           <Mail className="w-3 h-3" />
-                          {companyManager.email}
+                          {managerDetails.email}
                         </span>
-                        {companyManager.mobile_number && (
-                          <span className="flex items-center gap-1">
-                            <Phone className="w-3 h-3" />
-                            {companyManager.mobile_number}
-                          </span>
+                        {managerDetails.is_active !== undefined && (
+                          <Badge variant={managerDetails.is_active ? 'default' : 'secondary'} className="w-fit text-xs">
+                            {managerDetails.is_active ? 'Active' : 'Inactive'}
+                          </Badge>
                         )}
                       </div>
                     </div>
@@ -233,13 +251,13 @@ export default function CompanyDetailModal({
               </CardContent>
             </Card>
 
-            {/* Employees */}
+            {/* Employees - list + table */}
             <Card className="lg:col-span-3">
               <CardHeader>
                 <CardTitle className="text-lg flex items-center justify-between">
                   <span className="flex items-center gap-2">
                     <User className="w-5 h-5" />
-                    Employees ({employees.length})
+                    Assigned Employees ({employeeCount})
                   </span>
                 </CardTitle>
               </CardHeader>
@@ -248,63 +266,63 @@ export default function CompanyDetailModal({
                   <div className="flex items-center justify-center py-8">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
                   </div>
-                ) : employees.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {employees.map((employee) => (
-                      <Card key={employee.id} className="p-4">
-                        <div className="flex items-center gap-3">
-                          <Avatar className="h-10 w-10">
-                            <AvatarFallback>
-                              {`${employee.first_name[0]}${employee.last_name[0]}`}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="flex-1 min-w-0">
-                            <h4 className="font-medium truncate">
-                              {employee.first_name} {employee.last_name}
-                            </h4>
-                            <p className="text-sm text-muted-foreground truncate">
-                              {employee.position || 'Employee'}
-                            </p>
-                            <Badge 
-                              variant={employee.status === 'active' ? 'default' : 'secondary'}
-                              className="text-xs mt-1"
-                            >
-                              {employee.status}
-                            </Badge>
-                          </div>
-                          {canManageEmployees && (
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm">
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleEditEmployee(employee)}>
-                                  <Edit className="h-4 w-4 mr-2" />
-                                  Edit Employee
-                                </DropdownMenuItem>
-                                <DropdownMenuItem 
-                                  className="text-orange-600"
-                                  onClick={() => handleRemoveEmployee(employee)}
-                                >
-                                  <UserMinus className="h-4 w-4 mr-2" />
-                                  Remove Employee
-                                </DropdownMenuItem>
-                                <DropdownMenuItem 
-                                  className="text-destructive"
-                                  onClick={() => handleDeleteEmployee(employee)}
-                                >
-                                  <Trash2 className="h-4 w-4 mr-2" />
-                                  Delete Employee
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          )}
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
+                ) : Array.isArray(employees) && employees.length > 0 ? (
+                  <>
+                    <div className="rounded-md border mb-4 overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Email</TableHead>
+                            <TableHead>Position</TableHead>
+                            <TableHead>Status</TableHead>
+                            {canManageEmployees && <TableHead className="w-[80px]"></TableHead>}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {employees.map((employee) => (
+                            <TableRow key={employee.id}>
+                              <TableCell className="font-medium">
+                                {employee.first_name} {employee.last_name}
+                              </TableCell>
+                              <TableCell className="text-muted-foreground">{employee.email}</TableCell>
+                              <TableCell>{employee.position || '—'}</TableCell>
+                              <TableCell>
+                                <Badge variant={employee.status === 'active' ? 'default' : 'secondary'} className="text-xs">
+                                  {employee.status}
+                                </Badge>
+                              </TableCell>
+                              {canManageEmployees && (
+                                <TableCell>
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button variant="ghost" size="sm">
+                                        <MoreHorizontal className="h-4 w-4" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end">
+                                      <DropdownMenuItem onClick={() => handleEditEmployee(employee)}>
+                                        <Edit className="h-4 w-4 mr-2" />
+                                        Edit
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem className="text-orange-600" onClick={() => handleRemoveEmployee(employee)}>
+                                        <UserMinus className="h-4 w-4 mr-2" />
+                                        Remove
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem className="text-destructive" onClick={() => handleDeleteEmployee(employee)}>
+                                        <Trash2 className="h-4 w-4 mr-2" />
+                                        Delete
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                </TableCell>
+                              )}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
                     <User className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -332,6 +350,16 @@ export default function CompanyDetailModal({
         onOpenChange={setShowAddEmployee}
         companyId={company?.id}
         companyName={company?.name}
+        onSuccess={handleEmployeeSuccess}
+      />
+
+      <AssignExistingUserModal
+        open={showAssignExisting}
+        onOpenChange={setShowAssignExisting}
+        companyId={company?.id}
+        companyName={company?.name}
+        existingEmployeeUserIds={existingEmployeeUserIds}
+        onSuccess={handleEmployeeSuccess}
       />
 
       <EditEmployeeModal

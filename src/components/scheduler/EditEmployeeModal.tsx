@@ -6,7 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useEmployees, useDepartments, Employee } from "@/hooks/useSchedulerDatabase";
-// Supabase removed - using Django API
+import { formatPhoneUS, parsePhoneUS } from "@/lib/utils";
+import apiClient from "@/lib/api-client";
 import { Trash2 } from "lucide-react";
 
 interface EditEmployeeModalProps {
@@ -59,13 +60,13 @@ export default function EditEmployeeModal({
         first_name: employee.first_name || "",
         last_name: employee.last_name || "",
         email: employee.email || "",
-        phone: employee.phone || "",
+        phone: formatPhoneUS(employee.phone) || "",
         hire_date: employee.hire_date || "",
         hourly_rate: employee.hourly_rate?.toString() || "",
         department_id: employee.department_id || "none",
         position: employee.position || "",
         emergency_contact_name: employee.emergency_contact_name || "",
-        emergency_contact_phone: employee.emergency_contact_phone || "",
+        emergency_contact_phone: formatPhoneUS(employee.emergency_contact_phone) || "",
         notes: employee.notes || "",
         status: employee.status || "active"
       });
@@ -100,13 +101,13 @@ export default function EditEmployeeModal({
         first_name: formData.first_name,
         last_name: formData.last_name,
         email: formData.email,
-        phone: formData.phone || undefined,
+        phone: parsePhoneUS(formData.phone) || undefined,
         hire_date: formData.hire_date || undefined,
         hourly_rate: formData.hourly_rate ? parseFloat(formData.hourly_rate) : undefined,
         department_id: formData.department_id !== "none" ? formData.department_id : undefined,
         position: formData.position || undefined,
         emergency_contact_name: formData.emergency_contact_name || undefined,
-        emergency_contact_phone: formData.emergency_contact_phone || undefined,
+        emergency_contact_phone: parsePhoneUS(formData.emergency_contact_phone) || undefined,
         notes: formData.notes || undefined,
         status: formData.status
       });
@@ -194,8 +195,9 @@ export default function EditEmployeeModal({
               <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
+                type="tel"
                 value={formData.phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, phone: formatPhoneUS(e.target.value) }))}
                 placeholder="(555) 123-4567"
               />
             </div>
@@ -293,8 +295,9 @@ export default function EditEmployeeModal({
                   <Label htmlFor="emergency_contact_phone">Phone</Label>
                   <Input
                     id="emergency_contact_phone"
+                    type="tel"
                     value={formData.emergency_contact_phone}
-                    onChange={(e) => setFormData(prev => ({ ...prev, emergency_contact_phone: e.target.value }))}
+                    onChange={(e) => setFormData(prev => ({ ...prev, emergency_contact_phone: formatPhoneUS(e.target.value) }))}
                     placeholder="(555) 123-4567"
                   />
                 </div>

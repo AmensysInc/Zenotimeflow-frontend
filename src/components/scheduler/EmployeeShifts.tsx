@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
-import { Calendar, Clock, MapPin, AlertTriangle, CheckCircle, Users } from "lucide-react";
+import { Calendar, Clock, MapPin, AlertTriangle, Users } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-// Supabase removed - using Django API
+import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { format, parseISO, isToday, isTomorrow, isPast, startOfWeek, endOfWeek, addWeeks } from "date-fns";
 import CompanyMissedShifts from "./CompanyMissedShifts";
 
@@ -35,7 +36,6 @@ const GRACE_PERIOD_MINUTES = 15;
 
 export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true }: EmployeeShiftsProps) {
   const [shifts, setShifts] = useState<any[]>([]);
-  const [approvedReplacements, setApprovedReplacements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [weekOffset, setWeekOffset] = useState(0);
   const [companyId, setCompanyId] = useState<string | null>(null);
@@ -74,14 +74,15 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       console.log('Checking for missed shifts. Grace threshold:', graceThreshold.toISOString());
       
       // Find ALL scheduled shifts for this employee that started more than 15 min ago
-      const overdueShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      const rawOverdue = await apiClient.get<any>('/scheduler/shifts/', {
         employee: employeeId,
         status: 'scheduled',
         is_missed: false,
         start_time__lt: graceThreshold.toISOString()
       });
+      const overdueShifts = ensureArray(rawOverdue);
       
-      if (!overdueShifts || overdueShifts.length === 0) {
+      if (overdueShifts.length === 0) {
         console.log('No overdue shifts found');
         return false;
       }
@@ -90,13 +91,14 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       
       // Check each shift for time clock entry
       for (const shift of overdueShifts) {
-        const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+        const rawClock = await apiClient.get<any>('/scheduler/time-clock/', {
           shift: shift.id,
           clock_in__isnull: false
         });
+        const clockEntries = ensureArray(rawClock);
         
         // If no clock entry, try to mark as missed
-        if (!clockEntries || clockEntries.length === 0) {
+        if (clockEntries.length === 0) {
           console.log('Attempting to mark shift as missed:', shift.id, 'start_time:', shift.start_time);
           try {
             await apiClient.patch(`/scheduler/shifts/${shift.id}/`, { 
@@ -121,35 +123,24 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
   const fetchData = useCallback(async () => {
     setLoading(true);
     
-    // First get the employee's company
+    // First get the employee's company (resolve id whether API returns object or id)
     const employeeData = await apiClient.get<any>(`/scheduler/employees/${employeeId}/`);
-    
-    if (employeeData?.company) {
-      setCompanyId(employeeData.company);
-    }
-    
+    const cid = employeeData?.company_id
+      ?? (typeof employeeData?.company === 'string' ? employeeData.company : (employeeData?.company as any)?.id);
+    if (cid) setCompanyId(String(cid));
+
     const today = addWeeks(new Date(), weekOffset);
     const weekStart = startOfWeek(today, { weekStartsOn: 1 });
     const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
     
     // Fetch own shifts
-    const ownShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+    const rawOwn = await apiClient.get<any>('/scheduler/shifts/', {
       employee: employeeId,
       start_time__gte: weekStart.toISOString(),
       start_time__lte: weekEnd.toISOString()
     });
+    const ownShifts = ensureArray(rawOwn);
     setShifts(ownShifts.sort((a: any, b: any) => 
-      new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
-    ));
-    
-    // Fetch approved replacement shifts for this employee
-    const replacementShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
-      replacement_employee: employeeId,
-      replacement_approved_at__isnull: false,
-      start_time__gte: weekStart.toISOString(),
-      start_time__lte: weekEnd.toISOString()
-    });
-    setApprovedReplacements(replacementShifts.sort((a: any, b: any) => 
       new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
     ));
     setLoading(false);
@@ -158,7 +149,7 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
   // Fetch all company shifts for the team schedule view
   const [companyShifts, setCompanyShifts] = useState<CompanyShift[]>([]);
   const [loadingCompanyShifts, setLoadingCompanyShifts] = useState(false);
-  const [scheduleTab, setScheduleTab] = useState<string>("my-shifts");
+  const [scheduleTab, setScheduleTab] = useState<string>(showTeamScheduleTab ? "team-schedule" : "my-shifts");
 
   const fetchCompanyShifts = useCallback(async () => {
     if (!companyId) return;
@@ -169,11 +160,18 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       const weekStart = startOfWeek(today, { weekStartsOn: 1 });
       const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
 
-      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      const rawShifts = await apiClient.get<any>('/scheduler/shifts/', {
         company: companyId,
         start_time__gte: weekStart.toISOString(),
         start_time__lte: weekEnd.toISOString()
       });
+      const list = ensureArray(rawShifts);
+      const shifts = list.map((s: any) => ({
+        ...s,
+        employee_id: s.employee_id ?? (typeof s.employee === 'object' && s.employee != null ? (s.employee as any).id : s.employee) ?? null,
+        employees: s.employees ?? s.employee,
+        employee: s.employee ?? s.employees
+      }));
       setCompanyShifts(shifts.sort((a: any, b: any) => 
         new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
       ));
@@ -189,11 +187,14 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
     const runCheck = async () => {
       await checkAndMarkMissedShifts();
       await fetchData();
-      await fetchCompanyShifts();
     };
-    
     runCheck();
-  }, [employeeId, weekOffset]); // Only refetch when employee or week changes
+  }, [employeeId, weekOffset]);
+
+  // Fetch company (team) shifts when companyId is available and when week changes
+  useEffect(() => {
+    if (companyId) fetchCompanyShifts();
+  }, [companyId, weekOffset, fetchCompanyShifts]);
   
   // Note: Real-time updates will be handled by Django Channels in the future
   // Removed Supabase real-time subscription
@@ -203,8 +204,8 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
     const endTime = parseISO(shift.end_time);
     const now = new Date();
     
-    // Check if shift is effectively missed (DB flag OR time-based detection)
-    if (isShiftEffectivelyMissed(shift)) {
+    // Show Missed only when actually marked as missed in DB (by employee missing the shift)
+    if (isShiftMissedForDisplay(shift)) {
       return <Badge variant="destructive" className="gap-1"><AlertTriangle className="h-3 w-3" />Missed</Badge>;
     }
     if (shift.status === 'completed') {
@@ -228,9 +229,9 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
     return <Badge variant="outline">Upcoming</Badge>;
   };
 
-  // Use the real-time missed check for display purposes
-  const isShiftMissed = (shift: any) => {
-    return isShiftEffectivelyMissed(shift);
+  // Show MISSED badge only when the shift was actually missed by an employee (DB flag set by manager/system), not time-based
+  const isShiftMissedForDisplay = (shift: any) => {
+    return Boolean(shift.is_missed || shift.status === 'missed');
   };
 
   const getDayLabel = (date: Date) => {
@@ -241,16 +242,6 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
 
   // Group shifts by day
   const shiftsByDay = shifts.reduce((acc, shift) => {
-    const dateKey = format(parseISO(shift.start_time), 'yyyy-MM-dd');
-    if (!acc[dateKey]) {
-      acc[dateKey] = [];
-    }
-    acc[dateKey].push(shift);
-    return acc;
-  }, {} as Record<string, any[]>);
-
-  // Group approved replacements by day
-  const replacementsByDay = approvedReplacements.reduce((acc, shift) => {
     const dateKey = format(parseISO(shift.start_time), 'yyyy-MM-dd');
     if (!acc[dateKey]) {
       acc[dateKey] = [];
@@ -274,73 +265,16 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
 
   return (
     <div className="space-y-6">
-    {/* Approved Replacement Shifts - Show at top */}
-    {approvedReplacements.length > 0 && (
-      <Card className="border-green-500/50 bg-green-500/5">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-green-700">
-            <CheckCircle className="h-5 w-5" />
-            Approved Coverage Shifts
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            These shifts have been approved for you to cover. You can clock in from your dashboard.
-          </p>
-          <div className="space-y-3">
-            {Object.entries(replacementsByDay).map(([dateKey, dayShifts]: [string, any[]]) => {
-              const date = parseISO(dateKey);
-              return (
-                <div key={dateKey}>
-                  <h4 className="font-medium mb-2 text-sm">
-                    {getDayLabel(date)} - {format(date, 'MMMM d, yyyy')}
-                  </h4>
-                  {dayShifts.map((shift: any) => (
-                    <div 
-                      key={shift.id}
-                      className="flex items-center justify-between p-4 border rounded-lg bg-green-500/10 border-green-500/30"
-                    >
-                      <div className="flex items-center gap-4">
-                        <Badge variant="secondary" className="gap-1 bg-green-100 text-green-700">
-                          <CheckCircle className="h-3 w-3" />
-                          Approved
-                        </Badge>
-                        <div className="flex items-center gap-2 text-lg font-medium">
-                          <Clock className="h-5 w-5 text-muted-foreground" />
-                          {format(parseISO(shift.start_time), 'h:mm a')} - {format(parseISO(shift.end_time), 'h:mm a')}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          <span>Covering for: {shift.employee?.first_name} {shift.employee?.last_name}</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {shift.companies?.name && (
-                          <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                            <MapPin className="h-3 w-3" />
-                            {shift.companies.name}
-                          </span>
-                        )}
-                        {shift.departments?.name && (
-                          <Badge variant="outline">{shift.departments.name}</Badge>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-    )}
-
     <Card>
-      <CardHeader>
+        <CardHeader>
         <div className="flex items-center justify-between flex-wrap gap-4">
           <CardTitle className="flex items-center gap-2">
             <Calendar className="h-5 w-5" />
             Schedule
           </CardTitle>
+          <p className="text-sm text-muted-foreground w-full">
+            My Shifts: only your shifts. Team Schedule: you and your co-workers (same company).
+          </p>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setWeekOffset(prev => prev - 1)}
@@ -363,16 +297,16 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
       <CardContent>
         <Tabs value={scheduleTab} onValueChange={setScheduleTab} className="w-full">
           <TabsList className="mb-4">
-            <TabsTrigger value="my-shifts" className="flex items-center gap-2">
-              <Calendar className="h-4 w-4" />
-              My Shifts
-            </TabsTrigger>
             {showTeamScheduleTab && (
               <TabsTrigger value="team-schedule" className="flex items-center gap-2">
                 <Users className="h-4 w-4" />
-                Team Schedule
+                My Schedule (you + co-workers)
               </TabsTrigger>
             )}
+            <TabsTrigger value="my-shifts" className="flex items-center gap-2">
+              <Calendar className="h-4 w-4" />
+              My Shifts only
+            </TabsTrigger>
           </TabsList>
 
           {/* My Shifts Tab */}
@@ -402,7 +336,7 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
                       </h3>
                       <div className="space-y-3">
                         {dayShifts.map((shift: any) => {
-                          const missed = isShiftMissed(shift);
+                          const missed = isShiftMissedForDisplay(shift);
                           return (
                             <div 
                               key={shift.id} 
@@ -482,8 +416,11 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
                       </h3>
                       <div className="space-y-3">
                         {dayShifts.map((shift) => {
-                          const isOwnShift = shift.employee_id === employeeId;
+                          const isOwnShift = String(shift.employee_id ?? '') === String(employeeId);
                           const missed = shift.is_missed || shift.status === 'missed';
+                          const emp = shift.employees ?? shift.employee;
+                          const firstName = emp?.first_name ?? '';
+                          const lastName = emp?.last_name ?? '';
                           return (
                             <div 
                               key={shift.id} 
@@ -501,12 +438,12 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
                                   isOwnShift ? 'bg-green-200 text-green-700' : 'bg-primary/10 text-primary'
                                 }`}>
                                   <span className="text-sm font-medium">
-                                    {shift.employees?.first_name?.[0]}{shift.employees?.last_name?.[0]}
+                                    {firstName[0]}{lastName[0]}
                                   </span>
                                 </div>
                                 <div>
                                   <p className="font-medium flex items-center gap-2">
-                                    {shift.employees?.first_name} {shift.employees?.last_name}
+                                    {firstName} {lastName}
                                     {isOwnShift && (
                                       <Badge variant="secondary" className="bg-green-100 text-green-700 text-xs">
                                         (You)

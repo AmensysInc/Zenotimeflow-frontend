@@ -3,7 +3,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-// Supabase removed - using Django API
+import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { toast } from "sonner";
 import { UserCheck, User } from "lucide-react";
 
@@ -33,26 +34,31 @@ export default function AssignManagerModal({
   useEffect(() => {
     if (open && company) {
       fetchAvailableUsers();
-      setCompanyManager(company.company_manager_id || "");
+      const current = company.company_manager_id ?? company.company_manager;
+      setCompanyManager(current && current !== "none" ? current : "none");
     }
   }, [open, company]);
 
   const fetchAvailableUsers = async () => {
     try {
-      // Get all users with manager role
-      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const raw = await apiClient.get<any>('/auth/users/');
+      const allUsers = ensureArray(raw);
+
+      // Users who can be assigned as company manager: have manager role, or admin/operations_manager (so super_admin can assign them)
+      const assignableRoles = ['manager', 'admin', 'operations_manager'];
       const managerUsers = allUsers.filter((u: any) => {
-        const roles = u.roles || [];
-        const isManager = roles.some((r: any) => r.role === 'manager');
-        const isActive = u.profile?.status === 'active' || !u.profile?.status;
+        const roles = Array.isArray(u.roles) ? u.roles : [];
+        const roleNames = roles.map((r: any) => r?.role ?? r?.name ?? r);
+        const canBeManager = assignableRoles.some((role) => roleNames.includes(role));
+        const isActive = u.is_active !== false && (u.profile?.status === 'active' || !u.profile?.status);
         const notCreatedBy = !company?.created_by || u.id !== company.created_by;
-        return isManager && isActive && notCreatedBy;
+        return canBeManager && isActive && notCreatedBy;
       });
 
       const profiles = managerUsers.map((u: any) => ({
         user_id: u.id,
-        full_name: u.profile?.full_name || u.email || '',
-        email: u.email || ''
+        full_name: (u.full_name ?? u.profile?.full_name ?? u.email ?? '').toString().trim() || u.email || 'Unknown',
+        email: (u.email ?? '').toString()
       })).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
       setAvailableUsers(profiles);
@@ -73,8 +79,9 @@ export default function AssignManagerModal({
     try {
       const updates: any = {};
       
-      if (companyManager !== company.company_manager_id) {
-        updates.company_manager_id = (companyManager && companyManager !== "none") ? companyManager : null;
+      const currentManagerId = company.company_manager_id ?? company.company_manager;
+      if (companyManager !== currentManagerId) {
+        updates.company_manager = (companyManager && companyManager !== "none") ? companyManager : null;
       }
 
       if (Object.keys(updates).length > 0) {

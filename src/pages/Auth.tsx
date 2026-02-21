@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -19,34 +18,37 @@ const Auth = () => {
   const { user } = useAuth();
 
   useEffect(() => {
-    console.log("Auth page loaded");
-    
-    // Check if user is already authenticated
     if (user) {
-      console.log("User already authenticated, redirecting to calendar");
-      navigate("/calendar");
+      navigate("/", { replace: true });
     }
   }, [user, navigate]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Attempting sign in with email:", email);
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      toast({
+        title: "Validation error",
+        description: "Please enter email and password",
+        variant: "destructive",
+      });
+      return;
+    }
     setIsLoading(true);
 
     try {
-      const response = await apiClient.login(email, password);
-      console.log("Sign in successful", response);
-      
-      // Update auth context by reloading the page or using a state update
-      // For now, we'll reload to trigger auth check
-      window.location.href = "/calendar";
-    } catch (error: any) {
-      console.error("Sign in error:", error);
+      await apiClient.login(trimmedEmail, password);
+      // Redirect to dashboard so AppRouter runs RedirectToUserHome and sends user to role-specific dashboard
+      window.location.href = "/dashboard";
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Invalid email or password. Please try again.";
       toast({
         title: "Sign in failed",
-        description: error.message || "Invalid email or password",
+        description: message,
         variant: "destructive",
       });
+    } finally {
       setIsLoading(false);
     }
   };

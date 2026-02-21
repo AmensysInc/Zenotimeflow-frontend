@@ -1,6 +1,58 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import apiClient from '@/lib/api-client';
 import { toast } from 'sonner';
+
+/** Normalize list API response to array (handles Django pagination or raw array). */
+function ensureArray<T>(data: T | T[] | { results?: T[]; data?: T[] } | null | undefined): T[] {
+  if (data == null) return [];
+  if (Array.isArray(data)) return data;
+  if (typeof data === 'object') {
+    if (Array.isArray((data as { results?: T[] }).results)) return (data as { results: T[] }).results;
+    if (Array.isArray((data as { data?: T[] }).data)) return (data as { data: T[] }).data;
+  }
+  return [];
+}
+
+/** Normalize company: organization_id and company_manager_id (Django may return organization/company_manager as FK). */
+function normalizeCompany<T extends { organization_id?: string; organization?: string | { id?: string }; company_manager_id?: string; company_manager?: string }>(c: T): T & { organization_id?: string; company_manager_id?: string } {
+  const orgId = c.organization_id ?? (typeof c.organization === 'string' ? c.organization : (c.organization as any)?.id);
+  const managerId = c.company_manager_id ?? (typeof c.company_manager === 'string' ? c.company_manager : (c.company_manager as any)?.id);
+  return { ...c, organization_id: orgId, company_manager_id: managerId };
+}
+
+/**
+ * Normalize employee from API to flat Employee shape.
+ * Backend may return nested employee.user (e.g. { user: { email, full_name } }) or company as FK object.
+ * Ensures first_name, last_name, email, company_id are set from employee or linked user.
+ */
+function normalizeEmployee(raw: any): Employee {
+  const user = raw?.user;
+  const fullName = (user?.full_name || raw?.full_name || '').trim() || `${(raw?.first_name || '').trim()} ${(raw?.last_name || '').trim()}`.trim();
+  const parts = fullName.split(/\s+/);
+  const first_name = (raw?.first_name ?? parts[0] ?? '').toString().trim();
+  const last_name = (raw?.last_name ?? (parts.length > 1 ? parts.slice(1).join(' ') : '')).toString().trim();
+  const email = (raw?.email ?? user?.email ?? '').toString().trim();
+  const companyId = raw?.company_id ?? (typeof raw?.company === 'string' ? raw.company : raw?.company?.id);
+  return {
+    id: raw?.id,
+    first_name: first_name || '—',
+    last_name: last_name || '—',
+    email: email || '—',
+    phone: raw?.phone ?? user?.phone,
+    hire_date: raw?.hire_date,
+    hourly_rate: raw?.hourly_rate,
+    status: raw?.status ?? 'active',
+    company_id: companyId ?? null,
+    department_id: raw?.department_id ?? (typeof raw?.department === 'string' ? raw.department : raw?.department?.id),
+    team_id: raw?.team_id ?? (typeof raw?.team === 'string' ? raw.team : raw?.team?.id),
+    position: raw?.position,
+    emergency_contact_name: raw?.emergency_contact_name,
+    emergency_contact_phone: raw?.emergency_contact_phone,
+    notes: raw?.notes,
+    created_at: raw?.created_at ?? new Date().toISOString(),
+    user_id: raw?.user_id ?? (typeof raw?.user === 'string' ? raw.user : raw?.user?.id)
+  } as Employee;
+}
 
 export interface Organization {
   id: string;
@@ -14,6 +66,16 @@ export interface Organization {
   created_by?: string;
   created_at: string;
   updated_at: string;
+}
+
+/** Manager details returned on company (company_manager_details). */
+export interface CompanyManagerDetails {
+  id: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  full_name?: string;
+  is_active?: boolean;
 }
 
 export interface Company {
@@ -31,6 +93,12 @@ export interface Company {
   created_by?: string;
   created_at: string;
   updated_at: string;
+  /** Manager details (from API); a company can have one manager. */
+  company_manager_details?: CompanyManagerDetails | null;
+  /** Number of employees in this company (no limit). */
+  employees_count?: number;
+  /** Preview list of employees for display. */
+  employees_preview?: { id: string; full_name: string; email: string; status: string }[];
 }
 
 export interface Department {
@@ -97,21 +165,22 @@ export interface ShiftReplacementRequest {
   updated_at: string;
 }
 
-export function useOrganizations() {
+export function useOrganizations(organizationManagerId?: string) {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchOrganizations = async () => {
+  const fetchOrganizations = useCallback(async () => {
     try {
-      const data = await apiClient.get<Organization[]>('/scheduler/organizations/');
-      setOrganizations(data || []);
+      const params = organizationManagerId ? { organization_manager: organizationManagerId } : undefined;
+      const data = await apiClient.get<Organization[] | { results?: Organization[] }>('/scheduler/organizations/', params);
+      setOrganizations(ensureArray(data));
     } catch (error) {
       console.error('Error fetching organizations:', error);
       toast.error('Failed to fetch organizations');
     } finally {
       setLoading(false);
     }
-  };
+  }, [organizationManagerId]);
 
   const createOrganization = async (orgData: Omit<Organization, 'id' | 'created_at' | 'updated_at'>) => {
     try {
@@ -178,7 +247,7 @@ export function useOrganizations() {
 
   useEffect(() => {
     fetchOrganizations();
-  }, []);
+  }, [fetchOrganizations]);
 
   return {
     organizations,
@@ -191,21 +260,24 @@ export function useOrganizations() {
   };
 }
 
-export function useCompanies() {
+export function useCompanies(companyManagerId?: string, organizationManagerId?: string) {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchCompanies = async () => {
+  const fetchCompanies = useCallback(async () => {
     try {
-      const data = await apiClient.get<Company[]>('/scheduler/companies/');
-      setCompanies(data || []);
+      const params: Record<string, string> = {};
+      if (organizationManagerId) params.organization_manager = organizationManagerId;
+      else if (companyManagerId) params.company_manager = companyManagerId;
+      const data = await apiClient.get<Company[] | { results?: Company[] }>('/scheduler/companies/', Object.keys(params).length ? params : undefined);
+      setCompanies(ensureArray(data).map(normalizeCompany));
     } catch (error) {
       console.error('Error fetching companies:', error);
       toast.error('Failed to fetch companies');
     } finally {
       setLoading(false);
     }
-  };
+  }, [companyManagerId, organizationManagerId]);
 
   const createCompany = async (companyData: Omit<Company, 'id' | 'created_at' | 'updated_at'>) => {
     try {
@@ -226,7 +298,7 @@ export function useCompanies() {
       
       const data = await apiClient.post<Company>('/scheduler/companies/', payload);
       
-      setCompanies(prev => [data, ...prev]);
+      setCompanies(prev => [normalizeCompany(data as any), ...prev]);
       toast.success('Company created successfully');
       return data;
     } catch (error) {
@@ -255,7 +327,7 @@ export function useCompanies() {
       
       const data = await apiClient.patch<Company>(`/scheduler/companies/${id}/`, payload);
       
-      setCompanies(prev => prev.map(c => c.id === id ? data : c));
+      setCompanies(prev => prev.map(c => c.id === id ? normalizeCompany(data as any) : c));
       toast.success('Company updated successfully');
       return data;
     } catch (error) {
@@ -280,7 +352,7 @@ export function useCompanies() {
 
   useEffect(() => {
     fetchCompanies();
-  }, []);
+  }, [fetchCompanies]);
 
   return {
     companies,
@@ -307,8 +379,8 @@ export function useDepartments(companyId?: string) {
         params.company = companyId;
       }
       
-      const data = await apiClient.get<Department[]>('/scheduler/departments/', params);
-      setDepartments(data || []);
+      const data = await apiClient.get<Department[] | { results?: Department[] }>('/scheduler/departments/', params);
+      setDepartments(ensureArray(data));
     } catch (error) {
       console.error('Error fetching departments:', error);
       toast.error('Failed to fetch departments');
@@ -384,21 +456,47 @@ export function useEmployees(companyId?: string) {
     if (!forceRefresh && fetchedCompanyRef.current === targetCompanyId) {
       return;
     }
+    if (forceRefresh) {
+      fetchedCompanyRef.current = undefined;
+    }
     
     try {
       if (isMountedRef.current) {
         setLoading(true);
       }
       
-      const params: any = {};
+      // RBAC: backend should return scoped list (Super Admin = all; org/company manager = their org/company)
+      const baseParams: any = {};
       if (!shouldFetchAll && targetCompanyId) {
-        params.company = targetCompanyId;
+        baseParams.company = targetCompanyId;
+        baseParams.company_id = targetCompanyId; // some backends filter by company_id
       }
-      
-      const data = await apiClient.get<Employee[]>('/scheduler/employees/', params);
+      baseParams.page_size = 100;
+      baseParams.limit = 500;
+
+      let allItems: any[] = [];
+      const params = { ...baseParams };
+      const data = await apiClient.get<any>('/scheduler/employees/', params);
+      if (Array.isArray(data)) {
+        allItems = data;
+      } else {
+        const chunk = ensureArray(data);
+        const total = (data as any)?.count ?? (data as any)?.total;
+        allItems = chunk;
+        let page = 2;
+        while (
+          typeof total === 'number' && allItems.length < total && page <= 50
+        ) {
+          const nextData = await apiClient.get<any>('/scheduler/employees/', { ...baseParams, page });
+          const nextChunk = ensureArray(nextData);
+          allItems = allItems.concat(nextChunk);
+          if (nextChunk.length === 0) break;
+          page += 1;
+        }
+      }
 
       if (isMountedRef.current) {
-        setEmployees(data || []);
+        setEmployees(allItems.map(normalizeEmployee));
         fetchedCompanyRef.current = targetCompanyId;
       }
     } catch (error) {
@@ -432,10 +530,10 @@ export function useEmployees(companyId?: string) {
       }
       
       const data = await apiClient.post<Employee>('/scheduler/employees/', payload);
-      
-      setEmployees(prev => [data, ...prev]);
+      const normalized = normalizeEmployee(data);
+      setEmployees(prev => [normalized, ...prev]);
       toast.success('Employee created successfully');
-      return data;
+      return normalized;
     } catch (error) {
       console.error('Error creating employee:', error);
       toast.error('Failed to create employee');
@@ -464,8 +562,8 @@ export function useEmployees(companyId?: string) {
       }
       
       const data = await apiClient.patch<Employee>(`/scheduler/employees/${id}/`, payload);
-      
-      setEmployees(prev => prev.map(e => e.id === id ? data : e));
+      const normalized = normalizeEmployee(data);
+      setEmployees(prev => prev.map(e => e.id === id ? normalized : e));
       toast.success('Employee updated successfully');
       return data;
     } catch (error) {
@@ -555,10 +653,10 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
         params.end_date = computedEnd.toISOString();
       }
       
-      const data = await apiClient.get<Shift[]>('/scheduler/shifts/', params);
+      const data = await apiClient.get<Shift[] | { results?: Shift[] }>('/scheduler/shifts/', params);
 
       if (isMountedRef.current) {
-        setShifts(data || []);
+        setShifts(ensureArray(data));
       }
     } catch (error) {
       console.error('Error fetching shifts:', error);
@@ -647,8 +745,13 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
 
   const deleteShift = async (id: string) => {
     try {
+      // Unlink any time-clock entries that reference this shift so delete can succeed
+      const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', { shift: id });
+      const list = ensureArray(clockEntries);
+      await Promise.all(list.map((entry: any) =>
+        apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
+      ));
       await apiClient.delete(`/scheduler/shifts/${id}/`);
-      
       setShifts(prev => prev.filter(s => s.id !== id));
       toast.success('Shift deleted successfully');
     } catch (error) {

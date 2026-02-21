@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useEmployees, useDepartments, Employee } from "@/hooks/useSchedulerDatabase";
 import apiClient from "@/lib/api-client";
+import { ensureArray, formatPhoneUS, parsePhoneUS } from "@/lib/utils";
 import { toast } from "sonner";
 import { UserPlus } from "lucide-react";
 
@@ -15,17 +16,22 @@ interface AddEmployeeModalProps {
   onOpenChange: (open: boolean) => void;
   companyId: string;
   companyName: string;
+  /** Called after employee is created so parent can refresh list (single source of truth from API) */
+  onSuccess?: () => void;
 }
 
 export default function AddEmployeeModal({ 
   open, 
   onOpenChange, 
   companyId, 
-  companyName 
+  companyName,
+  onSuccess 
 }: AddEmployeeModalProps) {
   const { createEmployee } = useEmployees();
   const { departments } = useDepartments(companyId);
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const [showAddAnother, setShowAddAnother] = useState(false);
   
   const [formData, setFormData] = useState({
     first_name: "",
@@ -63,37 +69,43 @@ export default function AddEmployeeModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+    // Prevent duplicate form submissions (only one API create call)
+    if (submittingRef.current || loading) return;
+    submittingRef.current = true;
+    setLoading(true);
+
     if (!formData.first_name.trim() || !formData.last_name.trim() || !formData.email.trim() || !formData.password.trim()) {
       toast.error("Please fill in all required fields");
+      setLoading(false);
+      submittingRef.current = false;
       return;
     }
 
-    // Basic email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(formData.email)) {
       toast.error("Please enter a valid email address");
+      setLoading(false);
+      submittingRef.current = false;
       return;
     }
 
-    // Password validation
     if (formData.password.length < 6) {
       toast.error("Password must be at least 6 characters");
+      setLoading(false);
+      submittingRef.current = false;
       return;
     }
 
-    setLoading(true);
-
     try {
-      // Check if email already exists in employees
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
-        email: formData.email
-      });
-      const existingEmployee = employees && employees.length > 0 ? employees[0] : null;
+      // Check if email already exists in employees (use Employee endpoint, normalize response)
+      const raw = await apiClient.get<any>('/scheduler/employees/', { email: formData.email.trim() });
+      const existingList = ensureArray(raw);
+      const existingEmployee = existingList.length > 0 ? existingList[0] : null;
 
       if (existingEmployee) {
         toast.error("An employee with this email already exists");
         setLoading(false);
+        submittingRef.current = false;
         return;
       }
 
@@ -102,15 +114,17 @@ export default function AddEmployeeModal({
       try {
         userData = await apiClient.post('/auth/register/', {
           email: formData.email.trim(),
-          full_name: `${formData.first_name.trim()} ${formData.last_name.trim()}`,
+          full_name: `${formData.first_name.trim()} ${formData.last_name.trim()}`.trim() || formData.email.trim(),
           password: formData.password,
+          password_confirm: formData.password,
           role: 'employee',
           app_type: 'scheduler'
         });
       } catch (userError: any) {
         console.error('Error creating user:', userError);
-        toast.error("Failed to create user account: " + (userError.message || 'Unknown error'));
+        toast.error("Failed to create user account: " + (userError?.message || 'Unknown error'));
         setLoading(false);
+        submittingRef.current = false;
         return;
       }
 
@@ -119,7 +133,7 @@ export default function AddEmployeeModal({
         first_name: formData.first_name.trim(),
         last_name: formData.last_name.trim(),
         email: formData.email.trim(),
-        phone: formData.phone.trim() || undefined,
+        phone: parsePhoneUS(formData.phone) || undefined,
         company_id: companyId,
         position: formData.position.trim() || "Employee",
         status: formData.status as "active" | "inactive" | "terminated",
@@ -127,37 +141,76 @@ export default function AddEmployeeModal({
         hourly_rate: formData.hourly_rate ? parseFloat(formData.hourly_rate) : undefined,
         department_id: formData.department_id !== "none" ? formData.department_id : undefined,
         emergency_contact_name: formData.emergency_contact_name.trim() || undefined,
-        emergency_contact_phone: formData.emergency_contact_phone.trim() || undefined,
+        emergency_contact_phone: parsePhoneUS(formData.emergency_contact_phone) || undefined,
         notes: formData.notes.trim() || undefined,
         user_id: userData?.id || userData?.user?.id || null
       };
 
+      // Single API call to create employee record (user already created above)
       await createEmployee(employeeData);
 
-      toast.success(`Employee added to ${companyName} successfully! Welcome email sent.`);
+      toast.success(`Employee added to ${companyName} successfully!`);
+      onSuccess?.();
+      setShowAddAnother(true);
       resetForm();
-      onOpenChange(false);
     } catch (error) {
       console.error('Error creating employee:', error);
       toast.error("Failed to create employee");
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   };
+
+  const handleAddAnother = () => {
+    setShowAddAnother(false);
+    resetForm();
+  };
+
+  const handleDone = () => {
+    setShowAddAnother(false);
+    onOpenChange(false);
+  };
+
+  const hasValidCompany = Boolean(companyId && companyId.trim());
+  const safeDepartments = Array.isArray(departments) ? departments : [];
 
   return (
     <Dialog open={open} onOpenChange={(open) => {
       onOpenChange(open);
-      if (!open) resetForm();
+      if (!open) {
+        resetForm();
+        setShowAddAnother(false);
+      }
     }}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <UserPlus className="w-5 h-5" />
-            Add New Employee
+            {showAddAnother ? "Employee added" : "Add New Employee"}
           </DialogTitle>
         </DialogHeader>
 
+        {!hasValidCompany ? (
+          <div className="py-4 text-center text-muted-foreground">
+            <p>Select a company first to add an employee.</p>
+            <Button type="button" variant="outline" className="mt-4" onClick={() => onOpenChange(false)}>
+              Close
+            </Button>
+          </div>
+        ) : showAddAnother ? (
+          <div className="space-y-4 py-4">
+            <p className="text-muted-foreground">You can add another employee to this company or close to see the list.</p>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={handleAddAnother}>
+                Add another employee
+              </Button>
+              <Button type="button" onClick={handleDone}>
+                Done
+              </Button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -209,8 +262,9 @@ export default function AddEmployeeModal({
               <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
+                type="tel"
                 value={formData.phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, phone: formatPhoneUS(e.target.value) }))}
                 placeholder="(555) 123-4567"
               />
             </div>
@@ -238,7 +292,7 @@ export default function AddEmployeeModal({
                 </SelectTrigger>
                 <SelectContent className="bg-background border shadow-lg z-50">
                   <SelectItem value="none">Select department</SelectItem>
-                  {departments.map((department) => (
+                  {safeDepartments.map((department) => (
                     <SelectItem key={department.id} value={department.id}>
                       {department.name}
                     </SelectItem>
@@ -308,8 +362,9 @@ export default function AddEmployeeModal({
                   <Label htmlFor="emergency_contact_phone">Phone</Label>
                   <Input
                     id="emergency_contact_phone"
+                    type="tel"
                     value={formData.emergency_contact_phone}
-                    onChange={(e) => setFormData(prev => ({ ...prev, emergency_contact_phone: e.target.value }))}
+                    onChange={(e) => setFormData(prev => ({ ...prev, emergency_contact_phone: formatPhoneUS(e.target.value) }))}
                     placeholder="(555) 123-4567"
                   />
                 </div>
@@ -345,6 +400,7 @@ export default function AddEmployeeModal({
             </Button>
           </div>
         </form>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -72,7 +72,7 @@ interface TemplateWithTasks {
 }
 
 const Tasks = () => {
-  const { user } = useAuth();
+  const { user, role: authRole } = useAuth();
   const { toast } = useToast();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [filteredEvents, setFilteredEvents] = useState<CalendarEvent[]>([]);
@@ -120,6 +120,13 @@ const Tasks = () => {
     event_type: "task",
     assigned_user_id: "",
   });
+
+  // Use auth role immediately so we don't block on fetchUserRole (avoids blank/loading for employees)
+  useEffect(() => {
+    if (authRole != null) {
+      setUserRole(authRole);
+    }
+  }, [authRole]);
 
   useEffect(() => {
     if (user) {
@@ -190,12 +197,10 @@ const Tasks = () => {
       return;
     }
     
-    console.log("Fetching user role for:", user.id);
-    
     try {
       const userData = await apiClient.getCurrentUser() as any;
       const roles = userData?.roles || [];
-      const roleNames = roles.map((r: any) => r.role);
+      const roleNames = roles.map((r: any) => (r.role ?? r.name ?? "").toLowerCase());
       
       if (roleNames.includes('super_admin')) {
         setUserRole('super_admin');
@@ -203,14 +208,14 @@ const Tasks = () => {
         setUserRole('operations_manager');
       } else if (roleNames.includes('manager')) {
         setUserRole('manager');
-      } else if (roleNames.includes('employee')) {
-        setUserRole('employee');
+      } else if (roleNames.includes('employee') || roleNames.includes('house_keeping') || roleNames.includes('maintenance')) {
+        setUserRole(roleNames.includes('employee') ? 'employee' : roleNames.includes('house_keeping') ? 'house_keeping' : 'maintenance');
       } else {
         setUserRole('user');
       }
     } catch (error) {
       console.error('Error fetching user role:', error);
-      setUserRole('user');
+      setUserRole(authRole ?? 'user');
     }
   };
 
@@ -234,23 +239,24 @@ const Tasks = () => {
       params.user = user.id;
     }
     
-    const eventsData = await apiClient.get<CalendarEvent[]>('/calendar/events/', params);
+    try {
+      const eventsData = await apiClient.get<CalendarEvent[]>('/calendar/events/', params);
 
-    // Get user profiles for display (if needed)
-    // Note: User info might already be included in the response
+      const eventsWithProfiles = eventsData || [];
+      const primaryTasks = eventsWithProfiles.filter(event => !event.parent_task_id);
+      const subTasks = eventsWithProfiles.filter(event => event.parent_task_id);
+      const tasksWithSubTasks = primaryTasks.map(task => ({
+        ...task,
+        sub_tasks: subTasks.filter(subTask => subTask.parent_task_id === task.id)
+      }));
 
-    const eventsWithProfiles = eventsData || [];
-
-    const primaryTasks = eventsWithProfiles.filter(event => !event.parent_task_id);
-    const subTasks = eventsWithProfiles.filter(event => event.parent_task_id);
-
-    const tasksWithSubTasks = primaryTasks.map(task => ({
-      ...task,
-      sub_tasks: subTasks.filter(subTask => subTask.parent_task_id === task.id)
-    }));
-
-    setEvents(tasksWithSubTasks);
-    setIsLoading(false);
+      setEvents(tasksWithSubTasks);
+    } catch (error) {
+      console.error('Error fetching tasks:', error);
+      setEvents([]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const fetchTeamMembers = async () => {
@@ -258,72 +264,79 @@ const Tasks = () => {
     
     try {
       // Fetch all users (Django will handle role-based filtering)
-      const users = await apiClient.get<any[]>('/auth/users/');
+      const usersRaw = await apiClient.get<any[]>('/auth/users/');
+      const users = Array.isArray(usersRaw) ? usersRaw : [];
       
       // Filter users with valid roles
       const teamMembersData = users
         .filter((u: any) => {
-          const roles = u.roles || [];
-          const roleNames = roles.map((r: any) => r.role);
+          const roles = u?.roles || [];
+          const roleNames = (Array.isArray(roles) ? roles : []).map((r: any) => r?.role ?? r?.name);
           return roleNames.some((role: string) => 
             ['operations_manager', 'manager', 'employee', 'house_keeping', 'maintenance'].includes(role)
           );
         })
         .map((u: any) => ({
           user_id: u.id,
-          full_name: u.profile?.full_name || u.full_name || null,
-          email: u.email
+          full_name: u?.profile?.full_name || u?.full_name || null,
+          email: u?.email
         }));
 
       setTeamMembers(teamMembersData);
     } catch (error) {
       console.error("Error fetching team members:", error);
-        setTeamMembers([]);
-      } else {
-        setTeamMembers(data || []);
-      }
-    } else if (userRole === 'operations_manager') {
-      // Organization managers can assign tasks to company managers within their organization
-      const companies = await apiClient.get<any[]>('/scheduler/companies/', { operations_manager: user?.id });
-      const managerIds = companies?.map(c => c.company_manager || c.company_manager_id).filter(Boolean) || [];
-      
-      if (managerIds.length > 0) {
-        const users = await apiClient.get<any[]>('/auth/users/');
-        const teamMembersData = users
-          .filter((u: any) => managerIds.includes(u.id))
-          .map((u: any) => ({
-            user_id: u.id,
-            full_name: u.profile?.full_name || u.full_name || null,
-            email: u.email
-          }));
-        setTeamMembers(teamMembersData);
-      } else {
-        setTeamMembers([]);
-      }
-    } else if (userRole === 'manager') {
-      // Company managers see their company employees with active status
-      const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager: user?.id });
-      const companyIds = companies.map(c => c.id);
-      
-      if (companyIds.length > 0) {
-        const allEmployees: any[] = [];
-        for (const companyId of companyIds) {
-          const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId, status: 'active' });
-          allEmployees.push(...employees);
+      setTeamMembers([]);
+    }
+
+    try {
+      if (userRole === 'operations_manager') {
+        const companies = await apiClient.get<any[]>('/scheduler/companies/', { operations_manager: user?.id });
+        const companiesList = Array.isArray(companies) ? companies : [];
+        const managerIds = companiesList.map(c => c?.company_manager || c?.company_manager_id).filter(Boolean);
+        
+        if (managerIds.length > 0) {
+          const usersRaw = await apiClient.get<any[]>('/auth/users/');
+          const usersList = Array.isArray(usersRaw) ? usersRaw : [];
+          const teamMembersData = usersList
+            .filter((u: any) => managerIds.includes(u?.id))
+            .map((u: any) => ({
+              user_id: u.id,
+              full_name: u?.profile?.full_name || u?.full_name || null,
+              email: u?.email
+            }));
+          setTeamMembers(teamMembersData);
+        } else {
+          setTeamMembers([]);
         }
+      } else if (userRole === 'manager') {
+        const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager: user?.id });
+        const companiesList = Array.isArray(companies) ? companies : [];
+        const companyIds = companiesList.map(c => c?.id).filter(Boolean);
         
-        const teamMembersData = allEmployees
-          .filter(emp => emp.user || emp.user_id)
-          .map(emp => ({
-            user_id: emp.user || emp.user_id,
-            full_name: `${emp.first_name} ${emp.last_name}`.trim(),
-            email: emp.email
-          }));
-        
-        setTeamMembers(teamMembersData);
-      } else {
-        setTeamMembers([]);
+        if (companyIds.length > 0) {
+          const allEmployees: any[] = [];
+          for (const companyId of companyIds) {
+            const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId, status: 'active' });
+            const list = Array.isArray(employees) ? employees : [];
+            allEmployees.push(...list);
+          }
+          
+          const teamMembersData = allEmployees
+            .filter(emp => emp?.user || emp?.user_id)
+            .map(emp => ({
+              user_id: emp.user || emp.user_id,
+              full_name: `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim(),
+              email: emp?.email
+            }));
+          
+          setTeamMembers(teamMembersData);
+        } else {
+          setTeamMembers([]);
+        }
       }
+    } catch (error) {
+      console.error("Error fetching team members (role-specific):", error);
+      setTeamMembers([]);
     }
   };
 
@@ -480,14 +493,12 @@ const Tasks = () => {
       // For now, return empty array
       setTemplatesWithTasks([]);
       setTemplatesLoading(false);
-      return;
-
+      
       // TODO: Implement template assignments API in Django
       // const assignments = await apiClient.get('/tasks/template-assignments/', { user: user.id });
       // const templatesData = await Promise.all(...);
-
-      const validTemplatesData = templatesData.filter(item => item !== null) as TemplateWithTasks[];
-      setTemplatesWithTasks(validTemplatesData);
+      // const validTemplatesData = templatesData.filter(item => item !== null) as TemplateWithTasks[];
+      // setTemplatesWithTasks(validTemplatesData);
     } catch (error) {
       console.error('Error in fetchUserTemplateTasks:', error);
     } finally {
@@ -505,26 +516,19 @@ const Tasks = () => {
         completed_at: newCompleted ? new Date().toISOString() : null
       });
 
+      // Update local state immediately for better UX
+      setEvents(prevEvents =>
+        prevEvents.map(event =>
+          event.id === taskId
+            ? { ...event, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }
+            : event
+        )
+      );
+
       toast({
-        title: "Task updated",
-        description: `Task marked as ${newCompleted ? 'completed' : 'pending'}`,
-          variant: "destructive",
-        });
-      } else {
-        // Update local state immediately for better UX
-        setEvents(prevEvents => 
-          prevEvents.map(event => 
-            event.id === taskId 
-              ? { ...event, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null }
-              : event
-          )
-        );
-        
-        toast({
-          title: newCompleted ? "Task completed!" : "Task reopened",
-          description: "Task status updated successfully",
-        });
-      }
+        title: newCompleted ? "Task completed!" : "Task reopened",
+        description: "Task status updated successfully",
+      });
     } catch (error) {
       console.error('Error toggling task completion:', error);
     }
@@ -552,37 +556,29 @@ const Tasks = () => {
         files: files || []
       });
 
+      await fetchEvents();
       toast({
         title: "Notes updated",
-          description: error.message,
-          variant: "destructive",
-        });
-      } else {
-        await fetchEvents();
-        toast({
-          title: "Notes updated",
-          description: "Task notes saved successfully",
-        });
-      }
+        description: "Task notes saved successfully",
+      });
     } catch (error) {
       console.error('Error updating task notes:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update notes",
+        variant: "destructive",
+      });
     }
   };
 
   const deleteTask = async (taskId: string) => {
     try {
       await apiClient.delete(`/calendar/events/${taskId}/`);
-
+      await fetchEvents();
       toast({
         title: "Task deleted",
         description: "Task removed successfully",
       });
-        await fetchEvents();
-        toast({
-          title: "Task deleted",
-          description: "Task removed successfully",
-        });
-      }
     } catch (error) {
       console.error('Error deleting task:', error);
     }
@@ -653,18 +649,13 @@ const Tasks = () => {
         all_day: event.all_day,
       });
 
+      await fetchEvents();
+      setIsEditDialogOpen(false);
+      setSelectedEvent(null);
       toast({
         title: "Task updated",
         description: "Task updated successfully",
       });
-        await fetchEvents();
-        setIsEditDialogOpen(false);
-        setSelectedEvent(null);
-        toast({
-          title: "Task updated",
-          description: "Task updated successfully",
-        });
-      }
     } catch (error) {
       console.error('Error updating task:', error);
     }

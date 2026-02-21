@@ -16,11 +16,16 @@ import {
 } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { toast } from "sonner";
+import { useAuth } from "@/hooks/useAuth";
+import { useUserRole } from "@/hooks/useUserRole";
 import AdminHoursReport from "@/components/scheduler/AdminHoursReport";
 import AdminTasksOverview from "@/components/scheduler/AdminTasksOverview";
 
 export default function SchedulerTimeClock() {
+  const { user } = useAuth();
+  const { role } = useUserRole();
   const [selectedPeriod, setSelectedPeriod] = useState<string>("today");
   const [selectedCompany, setSelectedCompany] = useState<string>("");
   const [selectedLocation, setSelectedLocation] = useState<string>("all");
@@ -33,7 +38,7 @@ export default function SchedulerTimeClock() {
 
   useEffect(() => {
     loadCompanies();
-  }, []);
+  }, [user?.id, role]);
 
   useEffect(() => {
     if (selectedCompany) {
@@ -44,15 +49,28 @@ export default function SchedulerTimeClock() {
 
   const loadCompanies = async () => {
     try {
-      const data = await apiClient.get<any[]>('/scheduler/companies/');
+      const params: Record<string, string> = {};
+      if (role === 'manager' && user?.id) params.company_manager = user.id;
+      else if (role === 'operations_manager' && user?.id) params.organization_manager = user.id;
+      const data = await apiClient.get<any>('/scheduler/companies/', Object.keys(params).length ? params : undefined);
+      const raw = ensureArray(data);
+      const companiesList = raw.map((c: any) => ({
+        ...c,
+        id: c.id ?? c.pk,
+        name: c.name ?? '',
+        type: c.type ?? '',
+      })).filter((c: any) => c.id != null && c.id !== '');
+      setCompanies(companiesList);
       
-      setCompanies(data || []);
-      
-      if (data && data.length > 0 && !selectedCompany) {
-        setSelectedCompany(data[0].id);
+      // Auto-select first company if available and none selected
+      if (companiesList.length > 0 && !selectedCompany) {
+        const firstId = companiesList[0].id;
+        if (firstId) setSelectedCompany(firstId);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading companies:', error);
+      toast.error(`Failed to load companies: ${error?.message || 'Unknown error'}`);
+      setCompanies([]);
     }
   };
 
@@ -60,12 +78,13 @@ export default function SchedulerTimeClock() {
     if (!selectedCompany) return;
     
     try {
-      const data = await apiClient.get<any[]>('/scheduler/departments/', { company: selectedCompany });
-      
-      setLocations(data || []);
+      const data = await apiClient.get<any>('/scheduler/departments/', { company: selectedCompany });
+      setLocations(ensureArray(data));
       setSelectedLocation("all");
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading locations:', error);
+      toast.error(`Failed to load departments: ${error?.message || 'Unknown error'}`);
+      setLocations([]);
     }
   };
 
@@ -80,23 +99,30 @@ export default function SchedulerTimeClock() {
         employeesParams.department = selectedLocation;
       }
 
-      const employeesData = await apiClient.get<any[]>('/scheduler/employees/', employeesParams);
+      const rawEmployees = await apiClient.get<any>('/scheduler/employees/', employeesParams);
+      const employeesData = ensureArray(rawEmployees);
       
       // Get time clock entries for all employees
       const allTimeEntries: any[] = [];
       for (const emp of employeesData) {
-        const entries = await apiClient.get<any[]>('/scheduler/time-clock/', { employee: emp.id });
-        allTimeEntries.push(...entries.map(e => ({ ...e, employees: emp })));
+        const rawEntries = await apiClient.get<any>('/scheduler/time-clock/', { employee: emp.id });
+        const entries = ensureArray(rawEntries);
+        allTimeEntries.push(...entries.map((e: any) => ({ ...e, employees: emp })));
       }
       
-      const timeData = allTimeEntries.sort((a, b) => 
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
+      const timeData = allTimeEntries.sort((a, b) => {
+        const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return tB - tA;
+      });
 
-      setTimeEntries(timeData || []);
-      setEmployees(employeesData || []);
-    } catch (error) {
+      setTimeEntries(timeData);
+      setEmployees(employeesData);
+    } catch (error: any) {
       console.error('Error loading time clock data:', error);
+      toast.error(`Failed to load time clock data: ${error?.message || 'Unknown error'}`);
+      setTimeEntries([]);
+      setEmployees([]);
     } finally {
       setLoading(false);
     }
@@ -170,16 +196,13 @@ export default function SchedulerTimeClock() {
       const totalHours = Math.round((totalMinutes / 60) * 100) / 100;
       const overtimeHours = totalHours > 8 ? Math.round((totalHours - 8) * 100) / 100 : 0;
       
-      await apiClient.patch(`/scheduler/time-clock/${currentClockEntry.id}/`, {
+      await apiClient.patch(`/scheduler/time-clock/${entryId}/`, {
         clock_out: clockOutTime.toISOString(),
         total_hours: totalHours,
         overtime_hours: overtimeHours,
-      })
-        .eq('id', entryId);
+      });
       
-      if (error) throw error;
-      
-      toast.success(`Clocked out. Total: ${totalHours.toFixed(2)} hours`);
+      toast.success(`Clocked out. Total: ${(Number(totalHours) || 0).toFixed(2)} hours`);
       loadTimeClockData();
     } catch (error) {
       console.error('Error clocking out:', error);
@@ -188,9 +211,9 @@ export default function SchedulerTimeClock() {
   };
 
   const activeEmployees = timeEntries.filter(entry => entry.clock_out === null);
-  const totalHours = timeEntries.reduce((sum, entry) => sum + (entry.total_hours || 0), 0);
+  const totalHours = timeEntries.reduce((sum, entry) => sum + Number(entry.total_hours || 0), 0);
   const avgHours = timeEntries.length > 0 ? totalHours / timeEntries.length : 0;
-  const overtimeHours = timeEntries.reduce((sum, entry) => sum + (entry.overtime_hours || 0), 0);
+  const overtimeHours = timeEntries.reduce((sum, entry) => sum + Number(entry.overtime_hours || 0), 0);
 
   const formatDuration = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
@@ -228,8 +251,8 @@ export default function SchedulerTimeClock() {
             </SelectTrigger>
             <SelectContent>
               {companies.map((company) => (
-                <SelectItem key={company.id} value={company.id}>
-                  {company.name} ({company.type})
+                <SelectItem key={company.id} value={String(company.id)}>
+                  {company.name} ({company.type || '—'})
                 </SelectItem>
               ))}
             </SelectContent>
@@ -317,7 +340,7 @@ export default function SchedulerTimeClock() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">
-                    {loading ? <Skeleton className="h-8 w-16" /> : totalHours.toFixed(1)}
+                    {loading ? <Skeleton className="h-8 w-16" /> : (Number(totalHours) || 0).toFixed(1)}
                   </div>
                 </CardContent>
               </Card>
@@ -328,7 +351,7 @@ export default function SchedulerTimeClock() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">
-                    {loading ? <Skeleton className="h-8 w-16" /> : avgHours.toFixed(1)}
+                    {loading ? <Skeleton className="h-8 w-16" /> : (Number(avgHours) || 0).toFixed(1)}
                   </div>
                 </CardContent>
               </Card>
@@ -339,7 +362,7 @@ export default function SchedulerTimeClock() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold text-amber-600">
-                    {loading ? <Skeleton className="h-8 w-12" /> : overtimeHours.toFixed(1)}
+                    {loading ? <Skeleton className="h-8 w-12" /> : (Number(overtimeHours) || 0).toFixed(1)}
                   </div>
                 </CardContent>
               </Card>
@@ -549,11 +572,11 @@ export default function SchedulerTimeClock() {
                             </TableCell>
                             <TableCell>{breakMin > 0 ? `${breakMin}m` : '-'}</TableCell>
                             <TableCell className="font-medium">
-                              {entry.total_hours ? `${entry.total_hours.toFixed(1)}h` : "-"}
+                              {entry.total_hours != null ? `${(Number(entry.total_hours) || 0).toFixed(1)}h` : "-"}
                             </TableCell>
                             <TableCell>
-                              {entry.overtime_hours && entry.overtime_hours > 0 ? (
-                                <span className="text-amber-600 font-medium">{entry.overtime_hours.toFixed(1)}h</span>
+                              {entry.overtime_hours != null && Number(entry.overtime_hours) > 0 ? (
+                                <span className="text-amber-600 font-medium">{(Number(entry.overtime_hours) || 0).toFixed(1)}h</span>
                               ) : '-'}
                             </TableCell>
                             <TableCell>

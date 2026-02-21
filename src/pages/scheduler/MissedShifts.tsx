@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserRole } from "@/hooks/useUserRole";
 import { useMissedShifts, MissedShift, ReplacementRequest } from "@/hooks/useMissedShifts";
@@ -34,8 +35,9 @@ export default function MissedShifts() {
   useEffect(() => {
     const getMyCompanyId = async () => {
       if (!user) return;
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-      const data = employees && employees.length > 0 ? employees[0] : null;
+      const raw = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+      const employees = ensureArray(raw);
+      const data = employees.length > 0 ? employees[0] : null;
       setMyCompanyId(data?.company_id || null);
     };
     getMyCompanyId();
@@ -61,16 +63,17 @@ export default function MissedShifts() {
   useEffect(() => {
     const loadFilters = async () => {
       if (!user) return;
-
+      try {
       if (isSuperAdmin) {
-        const orgs = await apiClient.get<any[]>('/scheduler/organizations/');
-        setOrganizations(orgs || []);
+        const rawOrgs = await apiClient.get<any>('/scheduler/organizations/');
+        setOrganizations(ensureArray(rawOrgs));
       }
 
       const params: any = {};
       if (isOrganizationManager) {
-        const orgs = await apiClient.get<any[]>('/scheduler/organizations/', { organization_manager: user.id });
-        const orgIds = orgs?.map(o => o.id) || [];
+        const rawOrgs = await apiClient.get<any>('/scheduler/organizations/', { organization_manager: user.id });
+        const orgs = ensureArray(rawOrgs);
+        const orgIds = orgs.map((o: any) => o.id);
         if (orgIds.length > 0) {
           params.organization = orgIds.join(',');
         }
@@ -78,15 +81,22 @@ export default function MissedShifts() {
         params.company_manager = user.id;
       }
 
-      const companiesData = await apiClient.get<any[]>('/scheduler/companies/', params);
-      setCompanies(companiesData || []);
+      const rawCompanies = await apiClient.get<any>('/scheduler/companies/', params);
+      const companiesList = ensureArray(rawCompanies).map((c: any) => ({
+        ...c,
+        organization_id: c.organization_id ?? (typeof c.organization === 'string' ? c.organization : c.organization?.id)
+      }));
+      setCompanies(companiesList);
       
       // Auto-select if only one company
-      if (companiesData?.length === 1) {
-        setSelectedCompany(companiesData[0].id);
+      if (companiesList.length === 1 && selectedCompany === "all") {
+        setSelectedCompany(companiesList[0].id);
       }
+    } catch (error) {
+      console.error("Error loading filters:", error);
+      setCompanies([]);
+    }
     };
-
     loadFilters();
   }, [user, isSuperAdmin, isOrganizationManager, isCompanyManager]);
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { parseISO, differenceInMinutes, isToday } from "date-fns";
 import { toast } from "sonner";
 
@@ -73,8 +74,9 @@ export const useShiftNotifications = () => {
 
     try {
       // Get employee record for current user
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-      const employee = employees?.[0];
+      const rawEmployees = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+      const employees = ensureArray(rawEmployees);
+      const employee = employees[0];
 
       if (!employee) return;
 
@@ -82,13 +84,14 @@ export const useShiftNotifications = () => {
       const today = now.toISOString().split('T')[0];
 
       // Get today's shifts for this employee
-      const shifts = await apiClient.get<Shift[]>('/scheduler/shifts/', {
+      const rawShifts = await apiClient.get<any>('/scheduler/shifts/', {
         employee: employee.id,
         start_date: `${today}T00:00:00`,
         end_date: `${today}T23:59:59`
       });
+      const shifts = ensureArray(rawShifts);
 
-      if (!shifts || shifts.length === 0) {
+      if (shifts.length === 0) {
         setUpcomingShift(null);
         return;
       }

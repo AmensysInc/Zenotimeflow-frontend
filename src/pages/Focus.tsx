@@ -88,14 +88,20 @@ const Focus = () => {
   useEffect(() => {
     if (user) {
       const initializeData = async () => {
-        await checkUserRole();
-        await Promise.all([
-          fetchSessions(),
-          fetchTasks(),
-          fetchPlannedSessions()
-        ]);
+        try {
+          await checkUserRole();
+          await Promise.all([
+            fetchSessions(),
+            fetchTasks(),
+            fetchPlannedSessions()
+          ]);
+        } finally {
+          setIsLoading(false);
+        }
       };
       initializeData();
+    } else {
+      setIsLoading(false);
     }
   }, [user, selectedUserId]);
 
@@ -119,9 +125,8 @@ const Focus = () => {
     try {
       const userData = await apiClient.getCurrentUser() as any;
       const roles = userData?.roles || [];
-      const role = roles.length > 0 ? roles[0].role : 'user';
+      const role = roles.length > 0 ? (roles[0].role ?? roles[0].name ?? 'user') : 'user';
       
-      console.log('User role set to:', role, 'for user:', user?.email);
       setUserRole(role);
       
       // Load users if manager
@@ -139,46 +144,58 @@ const Focus = () => {
 
     try {
       const allUsers = await apiClient.get<any[]>('/auth/users/');
-      const profiles = allUsers
-        .filter((u: any) => u.id !== user.id && u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
+      const list = Array.isArray(allUsers) ? allUsers : [];
+      const profiles = list
+        .filter((u: any) => u?.id !== user.id && u?.profile?.status !== 'deleted' && (u?.profile?.status === 'active' || !u?.profile?.status))
         .map((u: any) => ({ 
           id: u.id, 
-          full_name: u.profile?.full_name || u.email || 'Unknown', 
-          email: u.email || '' 
+          full_name: u?.profile?.full_name || u?.email || 'Unknown', 
+          email: u?.email || '' 
         }))
         .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
       setUsers(profiles);
-      console.log('Loaded users:', profiles.length);
-      }
     } catch (error) {
       console.error('Error in loadUsers:', error);
+      setUsers([]);
     }
   };
 
   const fetchSessions = async () => {
     if (!user) return;
 
-    const targetUserId = selectedUserId || user.id;
-    
-    const sessions = await apiClient.get<any[]>('/focus/sessions/', { 
-      user: targetUserId 
-    });
-    setSessions(sessions.slice(0, 20));
-    setIsLoading(false);
+    try {
+      const targetUserId = selectedUserId || user.id;
+      
+      const sessions = await apiClient.get<any[]>('/focus/sessions/', { 
+        user: targetUserId 
+      });
+      // Ensure sessions is always an array
+      const sessionsArray = Array.isArray(sessions) ? sessions : [];
+      setSessions(sessionsArray.slice(0, 20));
+    } catch (error) {
+      console.error('Error fetching sessions:', error);
+      setSessions([]);
+    }
   };
 
   const fetchTasks = async () => {
     if (!user) return;
 
-    const targetUserId = selectedUserId || user.id;
-    
-    const tasks = await apiClient.get<any[]>('/calendar/events/', { 
-      user: targetUserId,
-      event_type: 'task',
-      completed: false
-    });
-    setTasks(tasks);
+    try {
+      const targetUserId = selectedUserId || user.id;
+      
+      const tasks = await apiClient.get<any[]>('/calendar/events/', { 
+        user: targetUserId,
+        event_type: 'task',
+        completed: false
+      });
+      // Ensure tasks is always an array
+      setTasks(Array.isArray(tasks) ? tasks : []);
+    } catch (error) {
+      console.error('Error fetching tasks:', error);
+      setTasks([]);
+    }
   };
 
   const fetchPlannedSessions = async () => {
@@ -264,6 +281,12 @@ const Focus = () => {
       setPlanDuration("25");
       setPlanTaskId("");
       fetchSessions();
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to create planned session",
+        variant: "destructive",
+      });
     }
   };
 

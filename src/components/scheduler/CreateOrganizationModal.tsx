@@ -6,6 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 // Supabase removed - using Django API
 import { toast } from "sonner";
+import apiClient from "@/lib/api-client";
+import { formatPhoneUS, parsePhoneUS } from "@/lib/utils";
 
 interface CreateOrganizationModalProps {
   open: boolean;
@@ -40,9 +42,11 @@ export default function CreateOrganizationModal({ open, onOpenChange, onSuccess 
   const fetchAvailableUsers = async () => {
     try {
       // Get users with operations_manager role for organization manager assignment
-      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const rawUsers = await apiClient.get<any>('/auth/users/');
+      const allUsers = Array.isArray(rawUsers) ? rawUsers : (rawUsers && typeof rawUsers === 'object' && Array.isArray((rawUsers as any).results) ? (rawUsers as any).results : []);
+      
       const opsManagerUsers = allUsers.filter((u: any) => {
-        const roles = u.roles || [];
+        const roles = Array.isArray(u.roles) ? u.roles : [];
         return roles.some((r: any) => r.role === 'operations_manager') &&
                u.profile?.status !== 'deleted' &&
                (u.profile?.status === 'active' || !u.profile?.status);
@@ -61,6 +65,10 @@ export default function CreateOrganizationModal({ open, onOpenChange, onSuccess 
     }
   };
 
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData(prev => ({ ...prev, phone: formatPhoneUS(e.target.value) }));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -75,12 +83,10 @@ export default function CreateOrganizationModal({ open, onOpenChange, onSuccess 
         name: formData.name,
         color: formData.color,
         address: formData.address || null,
-          phone: formData.phone || null,
-          email: formData.email || null,
-          organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
-        });
-
-      if (error) throw error;
+        phone: formData.phone ? parsePhoneUS(formData.phone) : null,
+        email: formData.email || null,
+        organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
+      });
 
       onOpenChange(false);
       onSuccess?.();
@@ -93,9 +99,10 @@ export default function CreateOrganizationModal({ open, onOpenChange, onSuccess 
         organization_manager_id: ""
       });
       toast.success('Organization created successfully!');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create organization:', error);
-      toast.error('Failed to create organization');
+      const errorMessage = error?.message || error?.detail || 'Failed to create organization';
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -154,9 +161,11 @@ export default function CreateOrganizationModal({ open, onOpenChange, onSuccess 
               <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
+                type="tel"
                 value={formData.phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                onChange={handlePhoneChange}
                 placeholder="(555) 123-4567"
+                maxLength={14}
               />
             </div>
 

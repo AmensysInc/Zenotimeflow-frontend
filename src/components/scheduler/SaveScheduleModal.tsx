@@ -12,7 +12,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-// Supabase removed - using Django API
+import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -82,9 +83,10 @@ export default function SaveScheduleModal({
 
         // Check if there's already a schedule for this week
         const weekStartStr = weekStart.toISOString();
-        const existingSchedules = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+        const raw = await apiClient.get<any>('/scheduler/schedule-templates/', {
           company: companyId
         });
+        const existingSchedules = ensureArray(raw);
 
         const matchingSchedule = existingSchedules.find((schedule: any) => {
           const scheduleData = typeof schedule.template_data === 'string' 
@@ -142,9 +144,10 @@ export default function SaveScheduleModal({
 
       // Check for existing schedule with same week_start for this company (to prevent duplicates)
       const weekStartStr = weekStart.toISOString();
-      const existingSchedules = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+      const rawSchedules = await apiClient.get<any>('/scheduler/schedule-templates/', {
         company: companyId
       });
+      const existingSchedules = ensureArray(rawSchedules);
       
       // Find if there's already a schedule for this week
       const duplicateSchedule = existingSchedules.find((schedule: any) => {

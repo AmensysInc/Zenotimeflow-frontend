@@ -102,11 +102,17 @@ const Habits = () => {
   useEffect(() => {
     if (user) {
       const initializeData = async () => {
-        await checkUserRole();
-        loadHabits();
-        loadCompletions();
+        try {
+          await checkUserRole();
+          await loadHabits();
+          await loadCompletions();
+        } finally {
+          setIsLoading(false);
+        }
       };
       initializeData();
+    } else {
+      setIsLoading(false);
     }
   }, [user, selectedUserId]);
 
@@ -116,9 +122,8 @@ const Habits = () => {
     try {
       const userData = await apiClient.getCurrentUser() as any;
       const roles = userData?.roles || [];
-      const role = roles.length > 0 ? roles[0].role : 'user';
+      const role = roles.length > 0 ? (roles[0].role ?? roles[0].name ?? 'user') : 'user';
       
-      console.log('User role set to:', role, 'for user:', user?.email);
       setUserRole(role);
       
       // Load users if manager
@@ -136,43 +141,55 @@ const Habits = () => {
 
     try {
       const allUsers = await apiClient.get<any[]>('/auth/users/');
-      const profiles = allUsers
-        .filter((u: any) => u.id !== user.id && u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
+      const list = Array.isArray(allUsers) ? allUsers : [];
+      const profiles = list
+        .filter((u: any) => u?.id !== user.id && u?.profile?.status !== 'deleted' && (u?.profile?.status === 'active' || !u?.profile?.status))
         .map((u: any) => ({ 
           id: u.id, 
-          full_name: u.profile?.full_name || u.email || 'Unknown', 
-          email: u.email || '' 
+          full_name: u?.profile?.full_name || u?.email || 'Unknown', 
+          email: u?.email || '' 
         }))
         .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
       setUsers(profiles);
-      console.log('Loaded users:', profiles.length);
-      }
     } catch (error) {
       console.error('Error in loadUsers:', error);
+      setUsers([]);
     }
   };
 
   const loadHabits = async () => {
     if (!user) return;
 
-    const targetUserId = selectedUserId || user.id;
-    
-    const habits = await apiClient.get<any[]>('/habits/habits/', { user: targetUserId });
-    setHabits(habits.map((habit: any) => ({
-      ...habit,
-      frequency: habit.frequency as 'daily' | 'weekly'
-    })));
-    setIsLoading(false);
+    try {
+      const targetUserId = selectedUserId || user.id;
+      
+      const habits = await apiClient.get<any[]>('/habits/habits/', { user: targetUserId });
+      // Ensure habits is always an array
+      const habitsArray = Array.isArray(habits) ? habits : [];
+      setHabits(habitsArray.map((habit: any) => ({
+        ...habit,
+        frequency: habit.frequency as 'daily' | 'weekly'
+      })));
+    } catch (error) {
+      console.error('Error loading habits:', error);
+      setHabits([]);
+    }
   };
 
   const loadCompletions = async () => {
     if (!user) return;
 
-    const targetUserId = selectedUserId || user.id;
-    
-    const completions = await apiClient.get<any[]>('/habits/completions/', { user: targetUserId });
-    setCompletions(completions);
+    try {
+      const targetUserId = selectedUserId || user.id;
+      
+      const completions = await apiClient.get<any[]>('/habits/completions/', { user: targetUserId });
+      // Ensure completions is always an array
+      setCompletions(Array.isArray(completions) ? completions : []);
+    } catch (error) {
+      console.error('Error loading completions:', error);
+      setCompletions([]);
+    }
   };
 
   const createHabit = async () => {
@@ -208,6 +225,9 @@ const Habits = () => {
       setIsAddingHabit(false);
       toast.success('Habit created successfully');
       loadHabits();
+    } catch (error) {
+      console.error('Error creating habit:', error);
+      toast.error('Failed to create habit');
     }
   };
 
@@ -257,7 +277,9 @@ const Habits = () => {
     // First delete all completions for this habit
     try {
       const completions = await apiClient.get<any[]>('/habits/completions/', { habit: habitId });
-      await Promise.all(completions.map((c: any) => 
+      // Ensure completions is always an array
+      const completionsArray = Array.isArray(completions) ? completions : [];
+      await Promise.all(completionsArray.map((c: any) => 
         apiClient.delete(`/habits/completions/${c.id}/`)
       ));
     } catch (completionsError: any) {

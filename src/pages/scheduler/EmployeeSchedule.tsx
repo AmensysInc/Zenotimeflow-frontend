@@ -6,8 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserRole } from "@/hooks/useUserRole";
+import { toast } from "sonner";
 import { format, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, addDays, addWeeks, addMonths, parseISO } from "date-fns";
 import EmployeeScheduleDetailModal from "@/components/scheduler/EmployeeScheduleDetailModal";
 import EmployeeScheduleReportModal from "@/components/scheduler/EmployeeScheduleReportModal";
@@ -57,7 +59,7 @@ type ViewMode = "daily" | "weekly" | "monthly";
 
 export default function EmployeeSchedule() {
   const { user } = useAuth();
-  const { role, isSuperAdmin, isOrganizationManager, isCompanyManager } = useUserRole();
+  const { role, isSuperAdmin, isOrganizationManager, isCompanyManager, isEmployee, isLoading: roleLoading } = useUserRole();
 
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -65,6 +67,9 @@ export default function EmployeeSchedule() {
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [timeClockEntries, setTimeClockEntries] = useState<TimeClockEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [employeeCompanyId, setEmployeeCompanyId] = useState<string | null>(null);
+  const [employeeCompanyLoading, setEmployeeCompanyLoading] = useState(false);
+  const [loggedInEmployeeId, setLoggedInEmployeeId] = useState<string | null>(null);
 
   const [selectedOrganization, setSelectedOrganization] = useState<string>("all");
   const [selectedCompany, setSelectedCompany] = useState<string>("all");
@@ -76,54 +81,106 @@ export default function EmployeeSchedule() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
 
-  const hasAccess = isSuperAdmin || isOrganizationManager || isCompanyManager;
+  const hasAdminAccess = isSuperAdmin || isOrganizationManager || isCompanyManager || role === 'admin';
+  const hasAccess = hasAdminAccess || isEmployee;
 
-  // Determine if a specific company is selected (or only one available)
+  // Determine if a specific company is selected (or only one available). For employee, use their company.
   const activeCompanyId = useMemo(() => {
+    if (isEmployee && employeeCompanyId) return employeeCompanyId;
     if (selectedCompany !== "all") return selectedCompany;
-    if (companies.length === 1) return companies[0].id;
+    if (companies.length === 1) return companies[0]?.id ?? null;
     return null;
-  }, [selectedCompany, companies]);
+  }, [isEmployee, employeeCompanyId, selectedCompany, companies]);
 
   const activeCompanyName = useMemo(() => {
     if (!activeCompanyId) return "";
     return companies.find((c) => c.id === activeCompanyId)?.name || "";
   }, [activeCompanyId, companies]);
 
-  // Load filters
+  // Load filters (admin only; employees use their own company from employee record)
   useEffect(() => {
-    if (!hasAccess || !user) return;
+    if (!hasAdminAccess || !user) return;
     loadFilters();
-  }, [user, role, hasAccess, selectedOrganization]);
+  }, [user, role, hasAdminAccess, selectedOrganization]);
+
+  // Employee: resolve their company so they can see "My Schedule" + co-workers in same company
+  useEffect(() => {
+    if (!user || !isEmployee) return;
+    setEmployeeCompanyLoading(true);
+    const loadEmployeeCompany = async () => {
+      try {
+        const empData = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+        const list = ensureArray(empData);
+        const emp = list[0];
+        if (!emp?.company_id && !emp?.company) {
+          setEmployeeCompanyLoading(false);
+          return;
+        }
+        const cid = emp.company_id ?? (typeof emp.company === 'string' ? emp.company : (emp.company as any)?.id);
+        const cname = (emp.company as any)?.name ?? 'My Company';
+        const orgId = (emp.company as any)?.organization_id ?? (emp.company as any)?.organization ?? '';
+        setEmployeeCompanyId(cid);
+        setLoggedInEmployeeId(emp.id ?? null);
+        setCompanies([{ id: cid, name: cname, organization_id: orgId }]);
+        setSelectedCompany(cid);
+      } catch (e) {
+        console.error('Error loading employee company:', e);
+        toast.error('Could not load your company.');
+      } finally {
+        setEmployeeCompanyLoading(false);
+      }
+    };
+    loadEmployeeCompany();
+  }, [user, isEmployee]);
 
   const loadFilters = async () => {
     if (!user) return;
     try {
+      // Load organizations for Super Admin and Organization Managers
       if (isSuperAdmin) {
-        const data = await apiClient.get<any[]>("/scheduler/organizations/");
-        setOrganizations(data || []);
+        const data = await apiClient.get<any>("/scheduler/organizations/");
+        setOrganizations(ensureArray(data));
       } else if (isOrganizationManager) {
-        const data = await apiClient.get<any[]>("/scheduler/organizations/", { organization_manager: user.id });
-        setOrganizations(data || []);
+        const data = await apiClient.get<any>("/scheduler/organizations/", { organization_manager: user.id });
+        setOrganizations(ensureArray(data));
       }
 
-      const params: any = {};
+      // Build company query params based on role
+      const params: any = { page_size: 500, limit: 500 };
       if (isSuperAdmin) {
+        // Super Admin: filter by organization if selected, otherwise show all
         if (selectedOrganization !== "all") {
           params.organization = selectedOrganization;
         }
       } else if (isOrganizationManager) {
-        const orgs = await apiClient.get<any[]>("/scheduler/organizations/", { organization_manager: user.id });
-        const orgIds = orgs?.map((o) => o.id) || [];
-        if (orgIds.length > 0) params.organization = orgIds.join(',');
+        // Organization Manager: only show companies in their organizations
+        const orgs = await apiClient.get<any>("/scheduler/organizations/", { organization_manager: user.id });
+        const orgList = ensureArray(orgs);
+        const orgIds = orgList.map((o: any) => o.id);
+        if (orgIds.length > 0) {
+          params.organization = orgIds.join(',');
+        }
       } else if (isCompanyManager) {
+        // Company Manager: only show their assigned company
         params.company_manager = user.id;
+      } else if (role === 'admin') {
+        // Admin: same as super_admin for company list (all or by org)
+        if (selectedOrganization !== "all") {
+          params.organization = selectedOrganization;
+        }
       }
 
-      const companiesData = await apiClient.get<any[]>("/scheduler/companies/", params);
-      setCompanies(companiesData || []);
+      const companiesData = await apiClient.get<any>("/scheduler/companies/", params);
+      const companiesList = ensureArray(companiesData);
+      setCompanies(companiesList);
+
+      // Auto-select company if only one exists and none is selected
+      if (companiesList.length === 1 && selectedCompany === "all") {
+        setSelectedCompany(companiesList[0].id);
+      }
     } catch (error) {
       console.error("Error loading filters:", error);
+      toast.error("Failed to load companies. Please refresh the page.");
     }
   };
 
@@ -155,32 +212,68 @@ export default function EmployeeSchedule() {
     try {
       const { start, end } = getDateRange();
 
-      // Fetch employees
-      const empData = await apiClient.get<any[]>('/scheduler/employees/', {
+      // Fetch employees (request larger page for paginated backends)
+      const empData = await apiClient.get<any>('/scheduler/employees/', {
         company: activeCompanyId,
-        status: 'active'
+        status: 'active',
+        page_size: 500,
+        limit: 500
       });
-      setEmployees(empData.sort((a: any, b: any) => 
+      const empList = ensureArray(empData).map((e: any) => ({
+        id: e.id,
+        first_name: e.first_name ?? e.firstName ?? '',
+        last_name: e.last_name ?? e.lastName ?? '',
+        position: e.position ?? e.employee_position ?? null,
+        status: e.status ?? e.employee_status ?? 'active',
+      }));
+      setEmployees(empList.sort((a: any, b: any) => 
         (a.first_name || '').localeCompare(b.first_name || '')
       ));
 
-      // Fetch shifts
-      const shiftsData = await apiClient.get<any[]>('/scheduler/shifts/', {
+      // Fetch shifts (try both date param styles for backend compatibility)
+      const shiftsRaw = await apiClient.get<any>('/scheduler/shifts/', {
         company: activeCompanyId,
         start_time__gte: start.toISOString(),
-        start_time__lte: end.toISOString()
+        start_time__lte: end.toISOString(),
+        start_date: start.toISOString(),
+        end_date: end.toISOString()
       });
-      setShifts(shiftsData.sort((a: any, b: any) => 
+      const rawShifts = ensureArray(shiftsRaw);
+      // Normalize so we always have employee_id (API may return employee object or id)
+      const shiftsData = rawShifts.map((s: any) => ({
+        ...s,
+        id: s.id,
+        employee_id: s.employee_id ?? (typeof s.employee === 'object' && s.employee != null ? (s.employee as any).id : s.employee) ?? null,
+        company_id: s.company_id ?? (typeof s.company === 'object' && s.company != null ? (s.company as any).id : s.company) ?? s.company_id,
+        start_time: s.start_time,
+        end_time: s.end_time,
+        status: s.status ?? 'scheduled',
+        notes: s.notes ?? null,
+        break_minutes: s.break_minutes ?? null
+      })).filter((s: any) => s.employee_id != null);
+      setShifts(shiftsData.sort((a: any, b: any) =>
         new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
       ));
 
       // Fetch time clock entries
       const shiftIds = shiftsData.map((s: any) => s.id);
       if (shiftIds.length > 0) {
-        const clockData = await apiClient.get<any[]>('/scheduler/time-clock/', {
+        const clockData = await apiClient.get<any>('/scheduler/time-clock/', {
           shift__in: shiftIds.join(',')
         });
-        setTimeClockEntries(clockData || []);
+        const rawClock = ensureArray(clockData);
+        const normalizedClock = rawClock.map((tc: any) => ({
+          ...tc,
+          id: tc.id,
+          employee_id: tc.employee_id ?? (typeof tc.employee === 'object' && tc.employee != null ? (tc.employee as any).id : tc.employee) ?? null,
+          shift_id: tc.shift_id ?? (typeof tc.shift === 'object' && tc.shift != null ? (tc.shift as any).id : tc.shift) ?? null,
+          clock_in: tc.clock_in ?? null,
+          clock_out: tc.clock_out ?? null,
+          break_start: tc.break_start ?? null,
+          break_end: tc.break_end ?? null,
+          total_hours: tc.total_hours != null ? Number(tc.total_hours) : null
+        }));
+        setTimeClockEntries(normalizedClock);
       } else {
         setTimeClockEntries([]);
       }
@@ -217,20 +310,27 @@ export default function EmployeeSchedule() {
     }
   };
 
+  // Resolve employee id from shift/clock (normalized in loadData; compare as string for robustness)
+  const shiftEmployeeId = (s: Shift) => (s as any).employee_id != null ? String((s as any).employee_id) : null;
+  const clockEmployeeId = (tc: TimeClockEntry) => (tc as any).employee_id != null ? String((tc as any).employee_id) : null;
+  const clockShiftId = (tc: TimeClockEntry) => (tc as any).shift_id != null ? String((tc as any).shift_id) : null;
+
   // Get shifts for a specific employee
   const getEmployeeShiftsWithClock = (empId: string) => {
-    const empShifts = shifts.filter((s) => s.employee_id === empId);
+    const id = String(empId);
+    const empShifts = shifts.filter((s) => shiftEmployeeId(s) === id);
     return empShifts.map((s) => {
-      const clockEntry = timeClockEntries.find((tc) => tc.shift_id === s.id && tc.employee_id === empId);
+      const clockEntry = timeClockEntries.find((tc) => clockShiftId(tc) === String(s.id) && clockEmployeeId(tc) === id);
       return { ...s, clockEntry: clockEntry || null };
     });
   };
 
-  // Get summary stats for an employee
+  // Get summary stats for an employee (coerce total_hours to number in case API returns string)
   const getEmployeeSummary = (empId: string) => {
-    const empShifts = shifts.filter((s) => s.employee_id === empId);
-    const empClock = timeClockEntries.filter((tc) => tc.employee_id === empId);
-    const totalHours = empClock.reduce((sum, tc) => sum + (tc.total_hours || 0), 0);
+    const id = String(empId);
+    const empShifts = shifts.filter((s) => shiftEmployeeId(s) === id);
+    const empClock = timeClockEntries.filter((tc) => clockEmployeeId(tc) === id);
+    const totalHours = empClock.reduce((sum, tc) => sum + Number(tc.total_hours || 0), 0);
     return { shiftCount: empShifts.length, totalHours };
   };
 
@@ -238,6 +338,18 @@ export default function EmployeeSchedule() {
     setSelectedEmployee(emp);
     setDetailOpen(true);
   };
+
+  // Show loading while role is resolving so we never render with stale/missing role (avoids blank or wrong access state)
+  if (roleLoading) {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-[60vh]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary" />
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!hasAccess) {
     return (
@@ -260,14 +372,16 @@ export default function EmployeeSchedule() {
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Calendar className="h-6 w-6" />
-            Employee Schedule
+            {isEmployee ? "My Schedule" : "Employee Schedule"}
           </h1>
           <p className="text-muted-foreground mt-1">
-            Monitor employee schedules, shifts, and attendance
+            {isEmployee
+              ? "Your shifts and your co-workers' schedules in your company."
+              : "Monitor employee schedules, shifts, and attendance"}
           </p>
         </div>
-        {/* Download Report - only when company is selected */}
-        {activeCompanyId && (
+        {/* Download Report - only when company is selected and not employee view */}
+        {activeCompanyId && !isEmployee && (
           <Button variant="outline" onClick={() => setReportOpen(true)}>
             <Download className="h-4 w-4 mr-2" />
             Download Report
@@ -275,7 +389,8 @@ export default function EmployeeSchedule() {
         )}
       </div>
 
-      {/* Filters */}
+      {/* Filters - only for admin roles; employee sees fixed company */}
+      {hasAdminAccess && (
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap items-center gap-4">
@@ -299,7 +414,7 @@ export default function EmployeeSchedule() {
               </Select>
             )}
 
-            {companies.length > 1 && (
+            {companies.length >= 1 && (
               <Select value={selectedCompany} onValueChange={setSelectedCompany}>
                 <SelectTrigger className="w-[200px]">
                   <Building className="h-4 w-4 mr-2" />
@@ -307,31 +422,56 @@ export default function EmployeeSchedule() {
                 </SelectTrigger>
                 <SelectContent className="bg-background border shadow-lg z-50">
                   <SelectItem value="all">All Companies</SelectItem>
-                  {companies.map((company) => (
+                  {companies.map((company: Company) => (
                     <SelectItem key={company.id} value={company.id}>{company.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             )}
-            {companies.length === 1 && (
-              <Badge variant="secondary" className="px-3 py-1.5">
-                <Building className="h-4 w-4 mr-2" />
-                {companies[0].name}
-              </Badge>
-            )}
           </div>
         </CardContent>
       </Card>
+      )}
 
-      {/* No company selected message */}
+      {/* Employee: show company badge when their company is loaded */}
+      {isEmployee && activeCompanyName && (
+        <Card className="bg-muted/50">
+          <CardContent className="p-3 flex items-center gap-2">
+            <Building className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium">{activeCompanyName}</span>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* No company selected / loading */}
       {!activeCompanyId ? (
         <Card>
           <CardContent className="p-8 text-center">
-            <Building className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-            <h3 className="text-lg font-medium mb-2">Select a Company</h3>
-            <p className="text-muted-foreground">
-              Please select an organization and company to view employee schedules.
-            </p>
+            {isEmployee && employeeCompanyLoading ? (
+              <>
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mx-auto mb-4" />
+                <h3 className="text-lg font-medium mb-2">Loading your schedule</h3>
+                <p className="text-muted-foreground">Fetching your company and co-workers...</p>
+              </>
+            ) : (
+              <>
+                <Building className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                <h3 className="text-lg font-medium mb-2">
+                  {isEmployee
+                    ? "No employee record"
+                    : companies.length === 0
+                    ? "No Companies Available"
+                    : "Select a Company"}
+                </h3>
+                <p className="text-muted-foreground">
+                  {isEmployee
+                    ? "Your account is not linked to a company. Please contact your administrator."
+                    : companies.length === 0
+                    ? "No companies found. Please create a company first or contact your administrator."
+                    : "Please select an organization and company to view employee schedules."}
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -379,28 +519,34 @@ export default function EmployeeSchedule() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {employees.map((emp) => {
                 const summary = getEmployeeSummary(emp.id);
+                const isLoggedInUser = isEmployee && loggedInEmployeeId === emp.id;
                 return (
                   <Card
                     key={emp.id}
-                    className="cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
+                    className={`cursor-pointer hover:border-primary/50 hover:shadow-md transition-all ${isLoggedInUser ? 'ring-2 ring-primary border-primary bg-primary/5' : ''}`}
                     onClick={() => handleEmployeeClick(emp)}
                   >
                     <CardContent className="p-4">
                       <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                          <span className="text-sm font-bold text-primary">
-                            {emp.first_name[0]}{emp.last_name[0]}
+                        <div className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${isLoggedInUser ? 'bg-primary text-primary-foreground' : 'bg-primary/10'}`}>
+                          <span className={`text-sm font-bold ${isLoggedInUser ? 'text-primary-foreground' : 'text-primary'}`}>
+                            {(emp.first_name ?? '')[0]}{(emp.last_name ?? '')[0] || '?'}
                           </span>
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{emp.first_name} {emp.last_name}</p>
+                          <p className="font-medium truncate flex items-center gap-2">
+                            {emp.first_name ?? ''} {emp.last_name ?? ''}
+                            {isLoggedInUser && (
+                              <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-primary text-primary-foreground">You</span>
+                            )}
+                          </p>
                           {emp.position && (
                             <p className="text-xs text-muted-foreground truncate">{emp.position}</p>
                           )}
                         </div>
                         <div className="text-right shrink-0">
                           <p className="text-sm font-medium">{summary.shiftCount} shifts</p>
-                          <p className="text-xs text-muted-foreground">{summary.totalHours.toFixed(1)} hrs</p>
+                          <p className="text-xs text-muted-foreground">{(Number(summary.totalHours) || 0).toFixed(1)} hrs</p>
                         </div>
                       </div>
                     </CardContent>
@@ -434,7 +580,7 @@ export default function EmployeeSchedule() {
                   </div>
                   <div className="text-center p-4 bg-muted rounded-lg">
                     <p className="text-2xl font-bold">
-                      {timeClockEntries.reduce((sum, tc) => sum + (tc.total_hours || 0), 0).toFixed(1)}
+                      {(Number(timeClockEntries.reduce((sum, tc) => sum + Number(tc.total_hours || 0), 0)) || 0).toFixed(1)}
                     </p>
                     <p className="text-sm text-muted-foreground">Total Hours</p>
                   </div>

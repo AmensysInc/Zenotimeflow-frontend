@@ -3,9 +3,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Download } from "lucide-react";
-// Supabase removed - using Django API
+import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { toast } from "sonner";
-import { format, parseISO, differenceInMinutes } from "date-fns";
+import { format, differenceInMinutes } from "date-fns";
 
 interface EmployeeScheduleReportModalProps {
   open: boolean;
@@ -36,35 +37,37 @@ export default function EmployeeScheduleReportModal({
       const endISO = new Date(endDate + "T23:59:59").toISOString();
 
       // Fetch employees for this company
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+      const employeesRaw = await apiClient.get<any>('/scheduler/employees/', {
         company: companyId,
         status: 'active'
       });
-      
-      if (!employees || employees.length === 0) {
-        toast.error("No employees found");
+      const employees = ensureArray(employeesRaw);
+
+      if (employees.length === 0) {
+        toast.error("No employees found for this company");
+        setGenerating(false);
         return;
       }
 
       // Fetch shifts in range
-      const shifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      const shiftsRaw = await apiClient.get<any>('/scheduler/shifts/', {
         company: companyId,
         start_time__gte: startISO,
         start_time__lte: endISO
       });
+      const shifts = ensureArray(shiftsRaw);
+      const shiftIds = shifts.map((s: any) => s.id).filter(Boolean);
 
-      const shiftIds = shifts.map((s: any) => s.id);
-
-      // Fetch time clock entries
+      // Fetch time clock entries (per shift if backend doesn't support shift__in)
       let clockEntries: any[] = [];
       if (shiftIds.length > 0) {
-        const clockData = await apiClient.get<any[]>('/scheduler/time-clock/', {
-          shift__in: shiftIds.join(',')
-        });
-        clockEntries = clockData || [];
+        for (const shiftId of shiftIds) {
+          const clockData = await apiClient.get<any>('/scheduler/time-clock/', { shift: shiftId });
+          clockEntries.push(...ensureArray(clockData));
+        }
       }
 
-      // Calculate total hours per employee
+      // Calculate total hours per employee (support employee_id as string or from nested employee)
       const employeeHours: Record<string, number> = {};
       for (const entry of clockEntries) {
         if (!entry.clock_in || !entry.clock_out) continue;
@@ -73,14 +76,17 @@ export default function EmployeeScheduleReportModal({
           totalMin -= differenceInMinutes(new Date(entry.break_end), new Date(entry.break_start));
         }
         const hours = Math.max(0, totalMin / 60);
-        employeeHours[entry.employee_id] = (employeeHours[entry.employee_id] || 0) + hours;
+        const empId = String(entry.employee_id ?? (entry.employee as any)?.id ?? "");
+        if (empId) employeeHours[empId] = (employeeHours[empId] || 0) + hours;
       }
 
       // Build CSV
       const rows = [["Employee Name", "Total Hours"]];
       for (const emp of employees) {
-        const totalHrs = employeeHours[emp.id] || 0;
-        rows.push([`${emp.first_name} ${emp.last_name}`, totalHrs.toFixed(2)]);
+        const empId = String(emp.id ?? emp.pk ?? "");
+        const totalHrs = employeeHours[empId] || 0;
+        const name = [emp.first_name, emp.last_name].filter(Boolean).join(" ").trim() || emp.full_name || "—";
+        rows.push([`"${name.replace(/"/g, '""')}"`, totalHrs.toFixed(2)]);
       }
 
       const csvContent = rows.map((r) => r.join(",")).join("\n");

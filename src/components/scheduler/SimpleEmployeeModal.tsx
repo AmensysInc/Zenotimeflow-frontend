@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useEmployees } from "@/hooks/useSchedulerDatabase";
 import apiClient from "@/lib/api-client";
+import { formatPhoneUS, parsePhoneUS } from "@/lib/utils";
 import { toast } from "sonner";
 import { UserPlus } from "lucide-react";
 
@@ -72,8 +73,9 @@ export default function SimpleEmployeeModal({
       try {
         userData = await apiClient.post('/auth/register/', {
           email: formData.email.trim(),
-          full_name: `${formData.firstName.trim()} ${formData.lastName.trim()}`,
+          full_name: `${formData.firstName.trim()} ${formData.lastName.trim()}`.trim() || formData.email.trim(),
           password: formData.password,
+          password_confirm: formData.password,
           role: 'employee',
           app_type: 'scheduler'
         });
@@ -89,7 +91,7 @@ export default function SimpleEmployeeModal({
         first_name: formData.firstName.trim(),
         last_name: formData.lastName.trim(),
         email: formData.email.trim(),
-        phone: formData.phone.trim(),
+        phone: parsePhoneUS(formData.phone) || undefined,
         company_id: companyId,
         position: "Employee",
         status: "active" as const,
@@ -188,8 +190,8 @@ export default function SimpleEmployeeModal({
               id="phone"
               type="tel"
               value={formData.phone}
-              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-              placeholder="Enter phone number"
+              onChange={(e) => setFormData({ ...formData, phone: formatPhoneUS(e.target.value) })}
+              placeholder="(555) 123-4567"
             />
           </div>
 

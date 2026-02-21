@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -91,6 +92,14 @@ export default function UserManagement() {
     }
   }, [isAssignCompanyDialogOpen, users, companies]);
 
+  // When Add User dialog opens, ensure Super Admin has fresh org/company data for dropdowns
+  useEffect(() => {
+    if (isDialogOpen && isAuthorized) {
+      loadOrganizations();
+      loadCompanies();
+    }
+  }, [isDialogOpen, isAuthorized]);
+
   const loadAvailableUsers = async () => {
     try {
       // Get all users who are already assigned to companies
@@ -107,9 +116,10 @@ export default function UserManagement() {
       });
 
       // Add employees from employees table
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { status: 'active' });
+      const rawEmployees = await apiClient.get<any>('/scheduler/employees/', { status: 'active' });
+      const employees = ensureArray(rawEmployees);
 
-      employees?.forEach(employee => {
+      employees.forEach(employee => {
         if (employee.user_id) {
           assignedUserIds.add(employee.user_id);
         }
@@ -159,9 +169,13 @@ export default function UserManagement() {
   }, [user]);
 
   const checkAuthorizationAndLoadUsers = async () => {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     try {
+      setLoading(true);
       // Check if user is super admin
       const userData = await apiClient.getCurrentUser() as any;
       const roles = userData?.roles || [];
@@ -171,59 +185,109 @@ export default function UserManagement() {
       if (isSuperAdmin || isRamaAdmin) {
         setIsAuthorized(true);
         setCurrentUserRole('super_admin');
+        // Load users first, then managers/ops managers
         await loadUsers();
-        await loadManagers();
-        await loadOperationsManagers();
+        // Load managers and ops managers in parallel (non-blocking)
+        loadManagers().catch(err => console.error('Error loading managers:', err));
+        loadOperationsManagers().catch(err => console.error('Error loading operations managers:', err));
       } else {
         setIsAuthorized(false);
         setLoading(false);
       }
-    } catch (error) {
-      console.error('Error loading users:', error);
+    } catch (error: any) {
+      console.error('Error checking authorization:', error);
       toast({
         title: "Error",
-        description: "Failed to load users",
+        description: error?.message || "Failed to check authorization",
         variant: "destructive",
       });
+      setIsAuthorized(false);
       setLoading(false);
     }
   };
 
   const loadUsers = async () => {
     try {
-      // Get all profiles EXCEPT deleted ones
-      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      // Get all users from backend users table only (no employees-without-account merge)
+      // Prefer is_staff=false so we only show real app users if backend supports it
+      let rawUsers: any;
+      try {
+        rawUsers = await apiClient.get<any>('/auth/users/', { is_staff: false });
+      } catch (_) {
+        try {
+          rawUsers = await apiClient.get<any>('/auth/users/');
+        } catch (slashError: any) {
+          try {
+            rawUsers = await apiClient.get<any>('/auth/users');
+          } catch (noSlashError: any) {
+            throw new Error(`Failed to fetch users: ${(noSlashError as Error)?.message || 'Unknown error'}`);
+          }
+        }
+      }
+      const rawList = ensureArray(rawUsers);
+      // One row per email (backend may return same user multiple times with different ids)
+      const seenEmails = new Set<string>();
+      const allUsers = rawList.filter((u: any) => {
+        const email = (u?.email ?? u?.profile?.email ?? '').toString().toLowerCase().trim();
+        const key = email || (u?.id ?? u?.user_id)?.toString();
+        if (!key || seenEmails.has(key)) return false;
+        seenEmails.add(key);
+        return true;
+      });
+
+      // Normalize user data: backend may return { id, email, profile: {...} } or { id, email, full_name, ... }
       const profiles = allUsers
-        .filter((u: any) => u.profile?.status !== 'deleted')
-        .map((u: any) => ({
-          ...u.profile,
-          user_id: u.id,
-          email: u.email,
-          manager: u.profile?.manager_id ? { user_id: u.profile.manager_id, full_name: u.profile.manager_name } : null
-        }))
+        .filter((u: any) => {
+          // Skip deleted users
+          const status = u.profile?.status ?? u.status;
+          return status !== 'deleted';
+        })
+        .map((u: any) => {
+          // Handle both nested profile and flat structure
+          const profile = u.profile || {};
+          return {
+            id: profile.id || u.id,
+            user_id: u.id,
+            email: u.email || profile.email || '',
+            full_name: profile.full_name || u.full_name || '',
+            created_at: profile.created_at || u.created_at || new Date().toISOString(),
+            status: profile.status || u.status || 'active',
+            manager_id: profile.manager_id || u.manager_id,
+            manager_name: profile.manager_name || u.manager_name,
+            manager: profile.manager_id ? { user_id: profile.manager_id, full_name: profile.manager_name } : null,
+            roles: u.roles || []
+          };
+        })
         .sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
 
       // Load all employee records (including those created by org managers/managers)
-      const employeeRows = await apiClient.get<any[]>('/scheduler/employees/', { status: 'active' });
+      const rawEmployees = await apiClient.get<any>('/scheduler/employees/', { status: 'active' });
+      const employeeRows: any[] = Array.isArray(rawEmployees)
+        ? rawEmployees
+        : (rawEmployees && typeof rawEmployees === 'object' && Array.isArray((rawEmployees as any).results))
+          ? (rawEmployees as any).results
+          : (rawEmployees && typeof rawEmployees === 'object' && Array.isArray((rawEmployees as any).data))
+            ? (rawEmployees as any).data
+            : [];
 
       const employeeUserIds = new Set(
-        (employeeRows ?? []).map((e) => e.user_id).filter(Boolean) as string[]
+        employeeRows.map((e) => e.user_id).filter(Boolean) as string[]
       );
       const employeeEmails = new Set(
-        (employeeRows ?? [])
+        employeeRows
           .map((e) => e.email?.toLowerCase())
           .filter(Boolean) as string[]
       );
 
       // Create a map of employees by email for quick lookup
       const employeesByEmail = new Map(
-        (employeeRows ?? []).map((e) => [e.email?.toLowerCase(), e])
+        employeeRows.map((e) => [e.email?.toLowerCase(), e])
       );
 
-      // Get all users with their roles (roles are included in the user response)
+      // Get all users with their roles (roles are included in the user response or already in profile)
       const usersWithRoles = profiles.map((profile: any) => {
         const userData = allUsers.find((u: any) => u.id === profile.user_id);
-        const rolesData = userData?.roles || [];
+        const rolesData = profile.roles || userData?.roles || [];
 
           const isEmployee =
             employeeUserIds.has(profile.user_id) ||
@@ -258,49 +322,49 @@ export default function UserManagement() {
         };
       });
 
-      // Find employees that don't have profiles yet (created by org managers/managers without auth accounts)
-      const profileEmails = new Set(
-        profiles.map(p => p.email?.toLowerCase()).filter(Boolean)
-      );
-      const profileUserIds = new Set(
-        profiles.map(p => p.user_id).filter(Boolean)
-      );
-
-      const employeesWithoutProfiles = (employeeRows ?? []).filter(emp => {
-        // Skip if employee already has a matching profile by user_id or email
-        if (emp.user_id && profileUserIds.has(emp.user_id)) return false;
-        if (emp.email && profileEmails.has(emp.email.toLowerCase())) return false;
-        return true;
-      });
-
-      // Create virtual profile entries for employees without profiles
-      const virtualProfiles = employeesWithoutProfiles.map(emp => ({
-        id: emp.id,
-        user_id: emp.user_id || emp.id, // Use employee id as fallback
-        full_name: `${emp.first_name} ${emp.last_name}`.trim(),
-        email: emp.email,
-        created_at: emp.created_at,
-        status: 'active',
-        role: 'employee',
-        manager_name: null,
-        manager_id: null
-      }));
-
-      // Combine profiles with virtual profiles
-      const allUsers = [...usersWithRoles, ...virtualProfiles];
-
-      setUsers(allUsers);
-    } catch (error) {
+      // Show only backend auth users so list and count match the backend users table
+      setUsers(usersWithRoles);
+    } catch (error: any) {
       console.error('Error loading users:', error);
       toast({
         title: "Error",
-        description: "Failed to load users",
+        description: error?.message || "Failed to load users. Check console for details.",
         variant: "destructive",
       });
+      setUsers([]); // Set empty array on error so UI shows "No users" instead of hanging
     } finally {
       setLoading(false);
     }
   };
+
+  // Keep user management data in sync with the backend (users, organizations, companies)
+  const POLL_INTERVAL_MS = 30000; // 30 seconds
+  useEffect(() => {
+    if (!user || !isAuthorized) return;
+
+    const refreshFromBackend = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        loadUsers();
+        loadOrganizations();
+        loadCompanies();
+      }
+    };
+
+    // Refetch when user returns to the tab
+    document.addEventListener('visibilitychange', refreshFromBackend);
+
+    // Refetch when window gains focus (e.g. switching back from another app or tab)
+    window.addEventListener('focus', refreshFromBackend);
+
+    // Poll periodically while tab is visible so list matches backend DB
+    const intervalId = setInterval(refreshFromBackend, POLL_INTERVAL_MS);
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshFromBackend);
+      window.removeEventListener('focus', refreshFromBackend);
+      clearInterval(intervalId);
+    };
+  }, [user, isAuthorized]);
 
   const loadManagers = async () => {
     try {
@@ -355,8 +419,12 @@ export default function UserManagement() {
 
   const loadCompanies = async () => {
     try {
-      const companies = await apiClient.get<any[]>('/scheduler/companies/');
-      setCompanies(companies.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
+      const raw = await apiClient.get<any>('/scheduler/companies/');
+      const list = ensureArray(raw).map((c: any) => ({
+        ...c,
+        organization_id: c.organization_id ?? (typeof c.organization === 'string' ? c.organization : c.organization?.id)
+      }));
+      setCompanies(list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
     } catch (error) {
       console.error('Error loading companies:', error);
     }
@@ -364,8 +432,9 @@ export default function UserManagement() {
 
   const loadOrganizations = async () => {
     try {
-      const organizations = await apiClient.get<any[]>('/scheduler/organizations/');
-      setOrganizations(organizations.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
+      const raw = await apiClient.get<any>('/scheduler/organizations/');
+      const list = ensureArray(raw);
+      setOrganizations(list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
     } catch (error) {
       console.error('Error loading organizations:', error);
     }
@@ -415,216 +484,208 @@ export default function UserManagement() {
     }
   };
 
+  /** Dynamic validation: require org/company based on selected role. */
+  const getCreateUserValidationError = (): string | null => {
+    const email = newUser.email?.trim();
+    const password = newUser.password;
+    if (!email) return "Email is required.";
+    if (!password) return "Password is required.";
+    if (password.length < 8) return "Password must be at least 8 characters.";
+    if (newUser.role === "operations_manager" && !newUser.organization_id) {
+      return "Please select an organization for Organization Manager.";
+    }
+    if (newUser.role === "manager") {
+      if (!newUser.organization_id) return "Please select an organization for Company Manager.";
+      if (!newUser.company_id) return "Please select a company for Company Manager.";
+    }
+    if (
+      (newUser.role === "employee" || newUser.role === "house_keeping" || newUser.role === "maintenance") &&
+      !newUser.company_id
+    ) {
+      return "Please select a company for this role.";
+    }
+    return null;
+  };
+
   const createUser = async () => {
-    if (!newUser.email || !newUser.password) {
-      toast({
-        title: "Error",
-        description: "Email and password are required",
-        variant: "destructive",
-      });
+    // Prevent duplicate submissions
+    if (isCreating) return;
+
+    const validationError = getCreateUserValidationError();
+    if (validationError) {
+      toast({ title: "Validation error", description: validationError, variant: "destructive" });
       return;
     }
 
     setIsCreating(true);
+    let successMessage = "User created successfully.";
+
     try {
-      // First check if user already exists (including deleted ones)
-      let existingProfile;
+      // Ensure we have auth token (api-client sends Bearer from localStorage)
+      const token = apiClient.getToken();
+      if (!token) {
+        toast({ title: "Session expired", description: "Please sign in again.", variant: "destructive" });
+        setIsCreating(false);
+        return;
+      }
+
+      // Check if user already exists (by email) – support paginated or list response
+      let existingProfile: any = null;
       try {
-        const users = await apiClient.get<any[]>('/auth/users/', { email: newUser.email });
-        existingProfile = users && users.length > 0 ? users[0] : null;
-      } catch (checkError: any) {
-        // If error is 404, user doesn't exist - that's fine
-        if (checkError.status !== 404) {
-          throw checkError;
-        }
+        const rawUsers = await apiClient.get<any>("/auth/users/", { email: newUser.email.trim() });
+        const list = ensureArray(rawUsers);
+        existingProfile = list.find((u: any) => (u.email || u.profile?.email || "").toLowerCase() === newUser.email.trim().toLowerCase()) || null;
+      } catch {
+        // Ignore pre-check errors; backend will reject duplicate on register
       }
 
       if (existingProfile) {
-        if (existingProfile.profile?.status === 'deleted') {
-          // Reactivate the deleted user instead of creating duplicate
-          try {
-            await apiClient.patch(`/auth/profiles/${existingProfile.id}/`, { 
-              status: 'active',
-              full_name: newUser.full_name,
-            });
-
-            // Add the new role
-            await apiClient.post('/auth/user-roles/', {
-              user: existingProfile.id,
-              role: newUser.role,
-              app_type: 'scheduler'
-            });
-          } catch (error: any) {
-            throw error;
-          }
-
-          toast({
-            title: "Success",
-            description: "User reactivated successfully",
+        if (existingProfile.profile?.status === "deleted") {
+          await apiClient.patch(`/auth/profiles/${existingProfile.id}/`, {
+            status: "active",
+            full_name: newUser.full_name || existingProfile.profile?.full_name,
           });
+          await apiClient.post("/auth/user-roles/", {
+            user: existingProfile.id,
+            role: newUser.role,
+            app_type: "scheduler",
+          });
+          successMessage = "User reactivated and role assigned.";
         } else {
-          // User already exists and is active
           toast({
-            title: "Error",
-            description: "User with this email already exists",
+            title: "User already exists",
+            description: "A user with this email already exists. Use a different email or edit the existing user from the list below.",
             variant: "destructive",
           });
           setIsCreating(false);
           return;
         }
       } else {
-        // Create completely new user
-        let data;
-        try {
-          data = await apiClient.post('/auth/register/', {
-            email: newUser.email,
-            full_name: newUser.full_name,
-            role: newUser.role,
-            password: newUser.password,
-            employee_pin: newUser.employee_pin || null,
-            app_type: 'scheduler',
-            manager_id: newUser.manager_id && newUser.manager_id !== "none" ? newUser.manager_id : null
-          });
-        } catch (error: any) {
-          console.error('User creation error:', error);
-          throw error;
+        // Payload for backend /auth/register/: match serializer (email, password, full_name; optional password_confirm, role, app_type)
+        const registerPayload: Record<string, any> = {
+          email: newUser.email.trim(),
+          password: newUser.password,
+          password_confirm: newUser.password,
+          full_name: newUser.full_name?.trim() || newUser.email.trim().split("@")[0],
+          role: newUser.role,
+          app_type: "scheduler",
+        };
+
+        const data = await apiClient.post<any>("/auth/register/", registerPayload);
+        const userId = data?.id ?? data?.user?.id;
+        if (!userId) {
+          toast({ title: "Error", description: "Invalid response: no user id returned.", variant: "destructive" });
+          setIsCreating(false);
+          return;
         }
 
-        console.log('User creation response:', data);
-
-        // Handle role-specific assignments
-        const userId = data?.id || data?.user?.id;
-        if (userId) {
-          // For Organization Manager - assign to organization
-          if (newUser.role === 'operations_manager' && newUser.organization_id) {
-            try {
-              await apiClient.patch(`/scheduler/organizations/${newUser.organization_id}/`, { 
-                organization_manager_id: userId 
-              });
-
-            } catch (orgError: any) {
-              console.error('Error assigning organization manager:', orgError);
-              toast({
-                title: "Warning",
-                description: "User created but failed to assign to organization. Please assign manually.",
-                variant: "destructive",
-              });
-            } finally {
-              toast({
-                title: "Success",
-                description: "User created and assigned as Organization Manager.",
-              });
-            }
-          }
-          // For Company Manager - assign to company
-          else if (newUser.role === 'manager' && newUser.company_id) {
-            try {
-              await apiClient.patch(`/scheduler/companies/${newUser.company_id}/`, { 
-                company_manager_id: userId 
-              });
-
-            } catch (companyError: any) {
-              console.error('Error assigning company manager:', companyError);
-              toast({
-                title: "Warning",
-                description: "User created but failed to assign to company. Please assign manually.",
-                variant: "destructive",
-              });
-            } finally {
-              toast({
-                title: "Success",
-                description: "User created and assigned as Company Manager.",
-              });
-            }
-          }
-          // For Employee-type roles - create employee record
-          else if ((newUser.role === 'employee' || newUser.role === 'house_keeping' || newUser.role === 'maintenance') && newUser.company_id) {
-            const nameParts = newUser.full_name.trim().split(' ');
-            const firstName = nameParts[0] || '';
-            const lastName = nameParts.slice(1).join(' ') || '';
-            
-            // Auto-assign team based on role
-            let teamId: string | null = null;
-            if (newUser.role === 'house_keeping' || newUser.role === 'maintenance') {
-              const teamName = newUser.role === 'house_keeping' ? 'House Keeping' : 'Maintenance';
-              try {
-                const teams = await apiClient.get<any[]>('/scheduler/schedule-teams/', { 
-                  company: newUser.company_id,
-                  name: teamName 
-                });
-                
-                if (teams && teams.length > 0) {
-                  teamId = teams[0].id;
-                } else {
-                  // Create the team if it doesn't exist
-                  const newTeam = await apiClient.post('/scheduler/schedule-teams/', {
-                    company: newUser.company_id,
-                    name: teamName,
-                    color: newUser.role === 'house_keeping' ? '#3B82F6' : '#EF4444'
-                  });
-                  
-                  if (newTeam) {
-                    teamId = newTeam.id;
-                  }
-                }
-              } catch (error) {
-                console.error('Error handling team:', error);
-              }
-            }
-            
-            try {
-              await apiClient.post('/scheduler/employees/', {
-                user: userId,
-                email: newUser.email,
-                first_name: firstName,
-                last_name: lastName,
-                company: newUser.company_id,
-                team: teamId,
-                status: 'active',
-                hire_date: new Date().toISOString().split('T')[0],
-                employee_pin: newUser.employee_pin || null
-              });
-
-            } catch (employeeError: any) {
-              console.error('Error creating employee record:', employeeError);
-              toast({
-                title: "Warning",
-                description: "User created but failed to add to company. Please assign manually.",
-                variant: "destructive",
-              });
-            } finally {
-              toast({
-                title: "Success",
-                description: "User created and added to company successfully.",
-              });
-            }
-          } else {
-            toast({
-              title: "Success",
-              description: "User created successfully. Welcome email will be sent shortly.",
-            });
-          }
-        } else {
-          toast({
-            title: "Success",
-            description: "User created successfully. Welcome email will be sent shortly.",
+        // Assign role via user-roles if not already set by register
+        try {
+          await apiClient.post("/auth/user-roles/", {
+            user: userId,
+            role: newUser.role,
+            app_type: "scheduler",
           });
+        } catch (roleErr: any) {
+          // If role already exists or backend already set it, continue
+          console.warn("User role assignment:", roleErr?.message);
+        }
+
+        // Role-based org/company assignment
+        if (newUser.role === "operations_manager" && newUser.organization_id) {
+          try {
+            await apiClient.patch(`/scheduler/organizations/${newUser.organization_id}/`, {
+              organization_manager_id: userId,
+            });
+            successMessage = "User created and assigned as Organization Manager.";
+          } catch (orgErr: any) {
+            console.error("Assign org manager:", orgErr);
+            successMessage = "User created. Assign to organization manually if needed.";
+          }
+        } else if (newUser.role === "manager" && newUser.company_id) {
+          try {
+            await apiClient.patch(`/scheduler/companies/${newUser.company_id}/`, {
+              company_manager_id: userId,
+            });
+            successMessage = "User created and assigned as Company Manager.";
+          } catch (companyErr: any) {
+            console.error("Assign company manager:", companyErr);
+            successMessage = "User created. Assign to company manually if needed.";
+          }
+        } else if (
+          (newUser.role === "employee" || newUser.role === "house_keeping" || newUser.role === "maintenance") &&
+          newUser.company_id
+        ) {
+          const nameParts = (newUser.full_name || "").trim().split(" ");
+          const firstName = nameParts[0] || "";
+          const lastName = nameParts.slice(1).join(" ") || "";
+          let teamId: string | null = null;
+          if (newUser.role === "house_keeping" || newUser.role === "maintenance") {
+            const teamName = newUser.role === "house_keeping" ? "House Keeping" : "Maintenance";
+            try {
+              const teams = await apiClient.get<any[]>("/scheduler/schedule-teams/", {
+                company: newUser.company_id,
+                name: teamName,
+              });
+              if (teams?.length) teamId = teams[0].id;
+              else {
+                const newTeam = await apiClient.post<any>("/scheduler/schedule-teams/", {
+                  company: newUser.company_id,
+                  name: teamName,
+                  color: newUser.role === "house_keeping" ? "#3B82F6" : "#EF4444",
+                });
+                if (newTeam?.id) teamId = newTeam.id;
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          try {
+            await apiClient.post("/scheduler/employees/", {
+              user: userId,
+              email: newUser.email.trim(),
+              first_name: firstName,
+              last_name: lastName,
+              company: newUser.company_id,
+              team: teamId,
+              status: "active",
+              hire_date: new Date().toISOString().split("T")[0],
+              employee_pin: newUser.employee_pin || null,
+            });
+            successMessage = "User created and added to company.";
+          } catch (empErr: any) {
+            console.error("Create employee record:", empErr);
+            successMessage = "User created. Add to company manually if needed.";
+          }
         }
       }
 
-      // Clear the form and close dialog
-      setNewUser({ email: "", full_name: "", role: "employee", password: "", employee_pin: "", manager_id: "none", organization_id: "", company_id: "" });
+      setNewUser({
+        email: "",
+        full_name: "",
+        role: "employee",
+        password: "",
+        employee_pin: "",
+        manager_id: "none",
+        organization_id: "",
+        company_id: "",
+      });
       setIsDialogOpen(false);
-      
-      // Reload users to show the updated user list
+      toast({ title: "Success", description: successMessage });
       await loadUsers();
     } catch (error: any) {
-      console.error('Error creating user:', error);
+      console.error("User creation error:", error);
+      const msg = error?.message || "Failed to create user. Check console for details.";
+      const isDuplicateEmail = /already exists|duplicate|email.*taken/i.test(msg);
       toast({
-        title: "Error",
-        description: error.message || "Failed to create user",
+        title: isDuplicateEmail ? "User already exists" : "Error",
+        description: isDuplicateEmail
+          ? "A user with this email is already registered. Use a different email or find and edit the existing user in the list below."
+          : msg,
         variant: "destructive",
       });
+      // Keep dialog open on duplicate email so user can change email
+      if (!isDuplicateEmail) setIsDialogOpen(false);
     } finally {
       setIsCreating(false);
     }
@@ -696,13 +757,13 @@ export default function UserManagement() {
               teamId = teams[0].id;
             } else {
               // Create the team if it doesn't exist
-              const newTeam = await apiClient.post('/scheduler/schedule-teams/', {
+              const newTeam = await apiClient.post<{ id: string }>('/scheduler/schedule-teams/', {
                 company: editingUser.company_id,
                 name: teamName,
                 color: editingUser.role === 'house_keeping' ? '#3B82F6' : '#EF4444'
               });
               
-              if (newTeam) {
+              if (newTeam?.id) {
                 teamId = newTeam.id;
               }
             }
@@ -820,23 +881,29 @@ export default function UserManagement() {
         console.error('Company cleanup error:', companyCleanupError);
       }
 
-      // 3. Delete employee records by user_id
+      // 3. Delete only the ONE employee record linked to this user (backend filters by user=userId)
       try {
         const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: userId });
-        await Promise.all(employees.map((emp: any) => 
-          apiClient.delete(`/scheduler/employees/${emp.id}/`)
-        ));
+        const list = Array.isArray(employees) ? employees : [];
+        for (const emp of list) {
+          if (emp.user_id === userId || emp.user === userId) {
+            await apiClient.delete(`/scheduler/employees/${emp.id}/`);
+            break; // At most one employee per user (OneToOne)
+          }
+        }
       } catch (employeeError: any) {
         console.log('No employee record to clean up by user_id:', employeeError);
       }
 
-      // 3b. Also try to delete by email (for virtual employees without user_id)
+      // 3b. Virtual employees (same email, no user_id) - delete at most one
       if (userEmail) {
         try {
           const employees = await apiClient.get<any[]>('/scheduler/employees/', { email: userEmail });
-          await Promise.all(employees.map((emp: any) => 
-            apiClient.delete(`/scheduler/employees/${emp.id}/`)
-          ));
+          const list = Array.isArray(employees) ? employees : [];
+          const virtual = list.find((emp: any) => !emp.user_id && !emp.user);
+          if (virtual) {
+            await apiClient.delete(`/scheduler/employees/${virtual.id}/`);
+          }
         } catch (employeeEmailError: any) {
           console.log('No employee record to clean up by email:', employeeEmailError);
         }
@@ -945,26 +1012,35 @@ export default function UserManagement() {
   };
 
   const assignUsersToCompany = async () => {
-    if (selectedUsersForAssignment.length === 0 || !assignmentData.company_id) {
-      toast({
-        title: "Error",
-        description: "Please select at least one user and a company",
-        variant: "destructive",
-      });
+    const isOrgManager = assignmentData.role === "operations_manager";
+    const needsCompany = !isOrgManager && assignmentData.role !== "super_admin";
+    if (selectedUsersForAssignment.length === 0) {
+      toast({ title: "Error", description: "Please select at least one user", variant: "destructive" });
+      return;
+    }
+    if (isOrgManager && !assignmentData.organization_id) {
+      toast({ title: "Error", description: "Please select an organization for Organization Manager", variant: "destructive" });
+      return;
+    }
+    if (needsCompany && !assignmentData.company_id) {
+      toast({ title: "Error", description: "Please select a company", variant: "destructive" });
       return;
     }
 
     try {
-      // First get the company details to determine app_type based on field_type
-      const companyData = await apiClient.get<any>(`/scheduler/companies/${assignmentData.company_id}/`);
-      const appType = companyData.field_type === 'IT' ? 'calendar' : 'scheduler';
+      // App type: for org manager use organization's first company or default scheduler; else use selected company
+      let appType = 'scheduler';
+      if (assignmentData.company_id) {
+        const companyData = await apiClient.get<any>(`/scheduler/companies/${assignmentData.company_id}/`);
+        appType = companyData?.field_type === 'IT' ? 'calendar' : 'scheduler';
+      }
 
       // Process each selected user
       for (const userId of selectedUsersForAssignment) {
-        // For operations_manager role, update the organization
+        // For operations_manager (Organization Manager), assign to organization only – no company
         if (assignmentData.role === "operations_manager") {
-          await apiClient.patch(`/scheduler/companies/${assignmentData.company_id}/`, { 
-            operations_manager_id: userId 
+          await apiClient.patch(`/scheduler/organizations/${assignmentData.organization_id}/`, {
+            organization_manager: userId,
           });
         } else if (assignmentData.role === "manager") {
           // For manager role (company manager), update the company
@@ -1004,22 +1080,35 @@ export default function UserManagement() {
           finalRole = "super_admin";
         }
         
-        // First, delete any existing roles for this user (both calendar and scheduler)
+        // First, delete any existing scheduler/calendar roles for this user
         const userData = await apiClient.get<any>(`/auth/users/${userId}/`);
         const existingRoles = userData?.roles || [];
-        const rolesToDelete = existingRoles.filter((r: any) => 
+        const rolesToDelete = existingRoles.filter((r: any) =>
           r.app_type === 'calendar' || r.app_type === 'scheduler'
         );
-        await Promise.all(rolesToDelete.map((role: any) => 
-          apiClient.delete(`/auth/user-roles/${role.id}/`)
-        ));
+        for (const role of rolesToDelete) {
+          try {
+            await apiClient.delete(`/auth/user-roles/${role.id}/`);
+          } catch (e) {
+            console.warn('Could not delete existing role:', e);
+          }
+        }
 
-        // Then insert the new role with correct app_type based on company field_type
-        await apiClient.post('/auth/user-roles/', {
-          user: userId,
-          role: finalRole,
-          app_type: appType
-        });
+        // Create the new role – backend may expect POST or PUT
+        const rolePayload = { user: userId, role: finalRole, app_type: appType };
+        try {
+          await apiClient.post('/auth/user-roles/', rolePayload);
+        } catch (postErr: any) {
+          if (postErr?.message?.includes('not allowed') || postErr?.message?.includes('405')) {
+            try {
+              await apiClient.put('/auth/user-roles/', rolePayload);
+            } catch (putErr) {
+              throw postErr;
+            }
+          } else {
+            throw postErr;
+          }
+        }
       }
 
       const userCount = selectedUsersForAssignment.length;
@@ -1225,7 +1314,18 @@ export default function UserManagement() {
               Users ({filteredUsers.length} of {users.length})
             </div>
             <div className="flex items-center gap-2">
-              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+              <Dialog
+                open={isDialogOpen}
+                onOpenChange={(open) => {
+                  setIsDialogOpen(open);
+                  if (!open) {
+                    loadUsers();
+                    setSearchTerm("");
+                    setSelectedRole("all");
+                    setSelectedStatus("all");
+                  }
+                }}
+              >
                 <DialogTrigger asChild>
                   <Button>
                     <Plus className="h-4 w-4 mr-2" />
@@ -1438,12 +1538,12 @@ export default function UserManagement() {
                 </div>
                 <DialogFooter>
                   <Button
-                    type="submit"
+                    type="button"
                     onClick={createUser}
                     disabled={isCreating}
                   >
                     {isCreating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Create User
+                    {isCreating ? "Creating…" : "Create User"}
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -1542,29 +1642,31 @@ export default function UserManagement() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="company_select" className="text-right">
-                      Company
-                    </Label>
-                    <Select 
-                      value={assignmentData.company_id} 
-                      onValueChange={(value) => setAssignmentData({ ...assignmentData, company_id: value })}
-                      disabled={!assignmentData.organization_id}
-                    >
-                      <SelectTrigger className="col-span-3">
-                        <SelectValue placeholder={assignmentData.organization_id ? "Select a company" : "Select organization first"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {companies
-                          .filter((company) => company.organization_id === assignmentData.organization_id)
-                          .map((company) => (
-                            <SelectItem key={company.id} value={company.id}>
-                              {company.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {assignmentData.role !== "operations_manager" && (
+                    <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="company_select" className="text-right">
+                        Company
+                      </Label>
+                      <Select 
+                        value={assignmentData.company_id} 
+                        onValueChange={(value) => setAssignmentData({ ...assignmentData, company_id: value })}
+                        disabled={!assignmentData.organization_id}
+                      >
+                        <SelectTrigger className="col-span-3">
+                          <SelectValue placeholder={assignmentData.organization_id ? "Select a company" : "Select organization first"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {companies
+                            .filter((company) => company.organization_id === assignmentData.organization_id)
+                            .map((company) => (
+                              <SelectItem key={company.id} value={company.id}>
+                                {company.name}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                   <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="assignment_role" className="text-right">
                       Role
@@ -1591,7 +1693,10 @@ export default function UserManagement() {
                   <Button
                     type="submit"
                     onClick={assignUsersToCompany}
-                    disabled={selectedUsersForAssignment.length === 0 || !assignmentData.company_id}
+                    disabled={
+                      selectedUsersForAssignment.length === 0 ||
+                      (assignmentData.role === "operations_manager" ? !assignmentData.organization_id : !assignmentData.company_id)
+                    }
                   >
                     Assign {selectedUsersForAssignment.length} User{selectedUsersForAssignment.length !== 1 ? 's' : ''} to Organization
                   </Button>

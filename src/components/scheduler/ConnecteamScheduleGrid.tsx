@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { format, isSameDay } from 'date-fns';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -75,6 +75,7 @@ interface InlineShiftForm {
   selectedPreset: string;
   startTime: string;
   endTime: string;
+  employeeId: string;
   shiftCreated: boolean;
 }
 
@@ -113,6 +114,24 @@ export default function ConnecteamScheduleGrid({
 }: ConnecteamScheduleGridProps) {
   const [inlineForm, setInlineForm] = useState<InlineShiftForm | null>(null);
   const [calendarRange, setCalendarRange] = useState<DateRange | undefined>(undefined);
+
+  const closeInlineForm = useCallback(() => setInlineForm(null), []);
+
+  useEffect(() => {
+    if (!inlineForm || inlineForm.shiftCreated) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setInlineForm(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [inlineForm]);
+
+  useEffect(() => {
+    if (!isEditMode) setInlineForm(null);
+  }, [isEditMode]);
 
   const getTeamColor = (teamId: string | null | undefined): string => {
     if (!teamId) return '#6B7280';
@@ -176,6 +195,7 @@ export default function ConnecteamScheduleGrid({
       selectedPreset: 'Morning (6AM-2PM)',
       startTime: '06:00',
       endTime: '14:00',
+      employeeId: '',
       shiftCreated: false,
     });
   };
@@ -193,8 +213,28 @@ export default function ConnecteamScheduleGrid({
     }
   };
 
-  const handleCreateShift = () => {
+  const handleCreateShift = async () => {
     if (!inlineForm) return;
+    if (employees.length > 0 && !inlineForm.employeeId) return; // require employee when list exists
+    if (employees.length === 0) return; // need at least one employee to assign
+    if (onCreateShiftDirect && inlineForm.employeeId) {
+      try {
+        await onCreateShiftDirect(inlineForm.employeeId, inlineForm.dayIndex, inlineForm.startTime, inlineForm.endTime);
+        setInlineForm(null);
+      } catch {
+        // Parent shows toast; keep form open so user can fix and retry
+      }
+      return;
+    }
+    if (onAddShift && inlineForm.employeeId) {
+      try {
+        onAddShift(inlineForm.employeeId, inlineForm.dayIndex);
+        setInlineForm(null);
+      } catch {
+        // Keep form open on error
+      }
+      return;
+    }
     setInlineForm({ ...inlineForm, shiftCreated: true });
   };
 
@@ -211,6 +251,7 @@ export default function ConnecteamScheduleGrid({
 
   // Handle dropping a shift card onto a day column to move it
   const handleDayDrop = (e: React.DragEvent, dayIndex: number) => {
+    if (!isEditMode) return;
     e.preventDefault();
     const shiftId = e.dataTransfer.getData('shiftId');
     const employeeId = e.dataTransfer.getData('employeeId');
@@ -367,10 +408,10 @@ export default function ConnecteamScheduleGrid({
                       return (
                         <div
                           key={shift.id}
-                          draggable={canManageShifts}
-                          onDragStart={(e) => onDragStart(e, shift.employee_id, shift)}
+                          draggable={canManageShifts && isEditMode}
+                          onDragStart={(e) => isEditMode && onDragStart(e, shift.employee_id, shift)}
                           onDragEnd={onDragEnd}
-                          onClick={() => canManageShifts && onShiftClick(shift)}
+                          onClick={() => canManageShifts && isEditMode && onShiftClick(shift)}
                           className={cn(
                             "rounded-xl p-4 cursor-pointer transition-all relative group/shift shadow-sm",
                             getShiftColor(shift),
@@ -395,7 +436,7 @@ export default function ConnecteamScheduleGrid({
                                 {employeeName.split(' ').map(n => n[0]).join('').slice(0, 2)}
                               </AvatarFallback>
                             </Avatar>
-                            {canManageShifts && onReassignShift ? (
+                            {canManageShifts && isEditMode && onReassignShift ? (
                               <Select
                                 value={shift.employee_id}
                                 onValueChange={(newEmpId) => {
@@ -435,27 +476,49 @@ export default function ConnecteamScheduleGrid({
                             </div>
                           )}
 
-                          {/* Delete button */}
-                          {isEditMode && canManageShifts && (
+                          {/* Delete button - only in edit mode */}
+                          {canManageShifts && isEditMode && (
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="absolute top-1.5 right-1.5 h-6 w-6 opacity-0 group-hover/shift:opacity-100 bg-black/20 hover:bg-black/40"
+                              className="absolute top-1.5 right-1.5 h-6 w-6 opacity-0 group-hover/shift:opacity-100 bg-black/20 hover:bg-destructive/20 hover:bg-opacity-100"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onDeleteShift(shift.id);
+                                if (window.confirm('Delete this shift? This cannot be undone.')) {
+                                  onDeleteShift(shift.id);
+                                }
                               }}
+                              title="Delete shift"
                             >
-                              <X className="h-3 w-3" />
+                              <Trash2 className="h-3 w-3" />
                             </Button>
                           )}
                         </div>
                       );
                     })}
 
-                    {/* Inline Add Shift Form - only preset + time + create */}
+                    {/* Inline Add Shift Form - employee + preset + time + create */}
                     {inlineForm && inlineForm.dayIndex === dayIndex && !inlineForm.shiftCreated && (
-                      <div className="rounded-xl border-2 border-dashed border-primary/60 p-4 bg-card shadow-lg space-y-3">
+                      <div
+                        className="relative z-20 rounded-xl border-2 border-dashed border-primary/60 p-4 bg-card shadow-lg space-y-3"
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >
+                        <Select
+                          value={inlineForm.employeeId}
+                          onValueChange={(value) => setInlineForm({ ...inlineForm, employeeId: value })}
+                        >
+                          <SelectTrigger className="h-10 text-sm text-left bg-background [&>span]:truncate [&>span]:block [&>span]:text-left">
+                            <SelectValue placeholder="Select employee" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-popover border shadow-lg z-50">
+                            {employees.map((emp) => (
+                              <SelectItem key={emp.id} value={emp.id}>
+                                {emp.first_name} {emp.last_name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <Select value={inlineForm.selectedPreset} onValueChange={handlePresetChange}>
                           <SelectTrigger className="h-10 text-sm text-left bg-background [&>span]:truncate [&>span]:block [&>span]:text-left">
                             <SelectValue />
@@ -484,22 +547,33 @@ export default function ConnecteamScheduleGrid({
                           />
                         </div>
 
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 items-center">
                           <Button
+                            type="button"
                             size="sm"
                             className="flex-1 h-10"
-                            onClick={handleCreateShift}
+                            onClick={() => handleCreateShift()}
+                            disabled={employees.length === 0 || (employees.length > 0 && !inlineForm.employeeId)}
                           >
                             <Check className="h-4 w-4 mr-1" /> Create Shift
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-10 px-3"
-                            onClick={() => setInlineForm(null)}
+                          <button
+                            type="button"
+                            className="inline-flex items-center justify-center gap-1.5 h-10 px-3 rounded-md border border-input bg-background hover:bg-muted shrink-0 text-sm font-medium"
+                            aria-label="Cancel"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              closeInlineForm();
+                            }}
+                            onPointerDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              closeInlineForm();
+                            }}
                           >
-                            <X className="h-4 w-4" />
-                          </Button>
+                            <X className="h-4 w-4" /> Cancel
+                          </button>
                         </div>
                       </div>
                     )}
@@ -531,8 +605,8 @@ export default function ConnecteamScheduleGrid({
                       </div>
                     )}
 
-                    {/* Add Shift Button */}
-                    {canManageShifts && (inlineForm === null || inlineForm.dayIndex !== dayIndex) && (
+                    {/* Add Shift Button - only when edit mode is on */}
+                    {canManageShifts && isEditMode && (inlineForm === null || inlineForm.dayIndex !== dayIndex) && (
                       <Button
                         variant="ghost"
                         size="sm"

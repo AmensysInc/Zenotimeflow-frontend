@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import apiClient from '@/lib/api-client';
+import { ensureArray } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -79,8 +80,9 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     const getMyEmployee = async () => {
       if (!user) return;
       try {
-        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-        setMyEmployeeId(employees?.[0]?.id || null);
+        const raw = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+        const employees = ensureArray(raw);
+        setMyEmployeeId(employees[0]?.id || null);
       } catch (error) {
         console.error('Error fetching employee:', error);
         setMyEmployeeId(null);
@@ -103,13 +105,37 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
         params.company = filterCompanyId;
       }
       
-      const data = await apiClient.get<any[]>('/scheduler/shifts/', params);
+      const rawShifts = await apiClient.get<any>('/scheduler/shifts/', params);
+      const data = ensureArray(rawShifts);
+
+      // Filter out shifts where the assigned employee actually clocked in (avoid false "missed" when clock-in exists)
+      const actuallyMissed: any[] = [];
+      for (const shift of data) {
+        const originalEmployeeId = shift.employee_id ?? (typeof shift.employee === 'string' ? shift.employee : shift.employee?.id);
+        if (!originalEmployeeId) {
+          actuallyMissed.push(shift);
+          continue;
+        }
+        try {
+          const rawClock = await apiClient.get<any>('/scheduler/time-clock/', {
+            shift: shift.id,
+            employee: originalEmployeeId,
+          });
+          const clockEntries = ensureArray(rawClock);
+          const hasClockIn = clockEntries.some((e: any) => e.clock_in != null);
+          if (!hasClockIn) {
+            actuallyMissed.push(shift);
+          }
+        } catch {
+          actuallyMissed.push(shift);
+        }
+      }
       
       // Fetch replacement employee info for shifts that have one
       // Also check if replacement has clocked in via time_clock
       // Also filter out shifts where the current employee is the one who missed (can't replace yourself)
       const shiftsWithReplacements = await Promise.all(
-        (data || [])
+        actuallyMissed
           .filter((shift: any) => (shift.employee || shift.employee_id) !== myEmployeeId) // Exclude own missed shifts
           .map(async (shift: any) => {
             let enrichedShift = { ...shift };
@@ -126,11 +152,12 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
               
               // Check if replacement has clocked in (even if replacement_started_at wasn't set)
               try {
-                const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+                const rawClock = await apiClient.get<any>('/scheduler/time-clock/', {
                   shift: shift.id,
                   employee: replacementEmployeeId
                 });
-                const clockEntry = clockEntries.find(e => e.clock_in);
+                const clockEntries = ensureArray(rawClock);
+                const clockEntry = clockEntries.find((e: any) => e.clock_in);
 
                 if (clockEntry) {
                   enrichedShift.replacement_clock_in = clockEntry.clock_in || undefined;
@@ -175,8 +202,8 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
         params.company = companyId;
       }
       
-      const data = await apiClient.get<ReplacementRequest[]>('/scheduler/replacement-requests/', params);
-      setReplacementRequests(data || []);
+      const raw = await apiClient.get<any>('/scheduler/replacement-requests/', params);
+      setReplacementRequests(ensureArray(raw));
     } catch (error) {
       console.error('Error fetching replacement requests:', error);
     }
@@ -194,13 +221,14 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
       
       // Find scheduled shifts that have passed the grace period without clock-in
       // Include created_at to filter out retroactively created shifts
-      const overdueShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+      const rawOverdue = await apiClient.get<any>('/scheduler/shifts/', {
         status: 'scheduled',
         is_missed: false,
         start_date: graceThreshold.toISOString()
       });
+      const overdueShifts = ensureArray(rawOverdue);
       
-      if (!overdueShifts || overdueShifts.length === 0) return;
+      if (overdueShifts.length === 0) return;
       
       // Check each shift for time clock entry
       for (const shift of overdueShifts) {
@@ -212,10 +240,11 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
           continue; // Skip retroactively created shifts
         }
         
-        const clockEntries = await apiClient.get<any[]>('/scheduler/time-clock/', {
+        const rawClock = await apiClient.get<any>('/scheduler/time-clock/', {
           shift: shift.id
         });
-        const clockEntry = clockEntries.find(e => e.clock_in);
+        const clockEntries = ensureArray(rawClock);
+        const clockEntry = clockEntries.find((e: any) => e.clock_in);
         
         // If no clock entry, mark as missed
         if (!clockEntry) {
@@ -236,8 +265,9 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     
     try {
       // Get current user's employee record
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-      const myEmployee = employees?.[0];
+      const rawEmp = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+      const employees = ensureArray(rawEmp);
+      const myEmployee = employees[0];
       
       if (!myEmployee) {
         toast.error('You must be an employee to request a shift replacement');
@@ -312,8 +342,9 @@ export function useMissedShifts(companyId?: string, employeeCompanyId?: string) 
     
     try {
       // Get employee record
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-      const myEmployee = employees?.[0];
+      const rawEmp = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+      const employees = ensureArray(rawEmp);
+      const myEmployee = employees[0];
       
       if (!myEmployee) {
         toast.error('Employee record not found');

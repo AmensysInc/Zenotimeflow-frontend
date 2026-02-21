@@ -1,6 +1,7 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import RoleProtectedRoute from "@/components/RoleProtectedRoute";
 import Layout from "@/components/Layout";
 
 // Calendar App Pages
@@ -13,67 +14,172 @@ import Account from "@/pages/Account";
 import UserManagement from "@/pages/UserManagement";
 import Template from "@/pages/Template";
 
+// Role-based dashboards
+import SuperAdminDashboard from "@/pages/dashboards/SuperAdminDashboard";
+import OrganizationDashboard from "@/pages/dashboards/OrganizationDashboard";
+import CompanyDashboard from "@/pages/dashboards/CompanyDashboard";
+import EmployeeDashboard from "@/pages/scheduler/EmployeeDashboard";
+
 // Scheduler App Pages
 import SchedulerCompanies from "@/pages/scheduler/Companies";
 import SchedulerSchedule from "@/pages/scheduler/Schedule";
 import SchedulerEmployees from "@/pages/scheduler/Employees";
 import SchedulerTimeClock from "@/pages/scheduler/TimeClock";
-import EmployeeDashboard from "@/pages/scheduler/EmployeeDashboard";
 import EmployeeSchedule from "@/pages/scheduler/EmployeeSchedule";
 import MissedShifts from "@/pages/scheduler/MissedShifts";
 
 import NotFound from "@/pages/NotFound";
+import { RedirectToUserHome } from "@/components/RedirectToUserHome";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const AppRouter = () => {
   const { user, isLoading: authLoading } = useAuth();
 
-  // Show loading while determining authentication
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary"></div>
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary" />
       </div>
     );
   }
 
-  // If no user, return nothing to let App.tsx routes handle it
   if (!user) {
-    return null;
+    return <Navigate to="/auth" replace />;
   }
 
-  // Unified app with all features
   return (
     <Routes>
-      <Route path="/*" element={
-        <ProtectedRoute>
-          <Layout>
-            <Routes>
-              <Route path="/" element={<Calendar />} />
-              <Route path="/dashboard" element={<Calendar />} />
-              <Route path="/calendar" element={<Calendar />} />
-              <Route path="/tasks" element={<Tasks />} />
-              <Route path="/focus" element={<Focus />} />
-              <Route path="/habits" element={<Habits />} />
-              <Route path="/user-management" element={<UserManagement />} />
-              <Route path="/template" element={<Template />} />
-              <Route path="/account" element={<Account />} />
-              <Route path="/profile" element={<Profile />} />
-              
-              {/* Scheduler Features */}
-              <Route path="/scheduler" element={<SchedulerCompanies />} />
-              <Route path="/scheduler/companies" element={<SchedulerCompanies />} />
-              <Route path="/scheduler/schedule" element={<SchedulerSchedule />} />
-              <Route path="/scheduler/employees" element={<SchedulerEmployees />} />
-              <Route path="/scheduler/time-clock" element={<SchedulerTimeClock />} />
-              <Route path="/scheduler/my-dashboard" element={<EmployeeDashboard />} />
-              <Route path="/scheduler/employee-schedule" element={<EmployeeSchedule />} />
-              <Route path="/scheduler/missed-shifts" element={<MissedShifts />} />
-              
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Layout>
-        </ProtectedRoute>
-      } />
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Routes>
+                {/* Entry: redirect to role dashboard */}
+                <Route path="/" element={<RedirectToUserHome />} />
+                <Route path="/dashboard" element={<RedirectToUserHome />} />
+
+                {/* Role-based dashboard routes */}
+                <Route
+                  path="/super-admin/dashboard"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["super_admin", "admin"]}>
+                      <SuperAdminDashboard />
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/organization/dashboard"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["operations_manager"]}>
+                      <OrganizationDashboard />
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/company/dashboard"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["manager"]}>
+                      <CompanyDashboard />
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/employee/dashboard"
+                  element={
+                    <RoleProtectedRoute
+                      allowedRoles={["employee", "house_keeping", "maintenance"]}
+                    >
+                      <ErrorBoundary>
+                        <EmployeeDashboard />
+                      </ErrorBoundary>
+                    </RoleProtectedRoute>
+                  }
+                />
+
+                {/* Calendar / productivity (all authenticated) */}
+                <Route
+                  path="/calendar"
+                  element={
+                    <ErrorBoundary>
+                      <Calendar />
+                    </ErrorBoundary>
+                  }
+                />
+                <Route path="/tasks" element={<ErrorBoundary><Tasks /></ErrorBoundary>} />
+                <Route path="/focus" element={<ErrorBoundary><Focus /></ErrorBoundary>} />
+                <Route path="/habits" element={<ErrorBoundary><Habits /></ErrorBoundary>} />
+                <Route path="/user-management" element={<UserManagement />} />
+                <Route path="/template" element={<Template />} />
+                <Route path="/account" element={<Account />} />
+                <Route path="/profile" element={<Profile />} />
+
+                {/* Scheduler routes - RBAC: admin roles for management; employees use my-dashboard / employee-schedule */}
+                <Route
+                  path="/scheduler/companies"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["super_admin", "admin", "operations_manager", "manager"]}>
+                      <SchedulerCompanies />
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/scheduler/schedule"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["super_admin", "admin", "operations_manager", "manager", "employee", "house_keeping", "maintenance"]}>
+                      <ErrorBoundary>
+                        <SchedulerSchedule />
+                      </ErrorBoundary>
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/scheduler/employees"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["super_admin", "admin", "operations_manager", "manager"]}>
+                      <ErrorBoundary>
+                        <SchedulerEmployees />
+                      </ErrorBoundary>
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/scheduler/time-clock"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["super_admin", "admin", "operations_manager", "manager"]}>
+                      <ErrorBoundary>
+                        <SchedulerTimeClock />
+                      </ErrorBoundary>
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/scheduler/my-dashboard"
+                  element={
+                    <RoleProtectedRoute
+                      allowedRoles={["employee", "house_keeping", "maintenance"]}
+                    >
+                      <EmployeeDashboard />
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route path="/scheduler/employee-schedule" element={<ErrorBoundary><EmployeeSchedule /></ErrorBoundary>} />
+                <Route
+                  path="/scheduler/missed-shifts"
+                  element={
+                    <RoleProtectedRoute allowedRoles={["super_admin", "admin", "operations_manager", "manager"]}>
+                      <MissedShifts />
+                    </RoleProtectedRoute>
+                  }
+                />
+                <Route path="/scheduler" element={<RedirectToUserHome />} />
+
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
     </Routes>
   );
 };

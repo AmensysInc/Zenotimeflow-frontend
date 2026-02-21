@@ -150,12 +150,12 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
           totalHours: 0,
           overtimeHours: 0,
           entries: 0,
-          hourlyRate: emp?.hourly_rate || 0,
+          hourlyRate: Number(emp?.hourly_rate || 0),
         };
       }
 
-      summary[empId].totalHours += entry.total_hours || 0;
-      summary[empId].overtimeHours += entry.overtime_hours || 0;
+      summary[empId].totalHours += Number(entry.total_hours || 0);
+      summary[empId].overtimeHours += Number(entry.overtime_hours || 0);
       summary[empId].entries += 1;
     });
 
@@ -172,11 +172,17 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
     let csvContent = 'Employee,Position,Department,Total Hours,Overtime Hours,Hourly Rate,Total Cost,Entries\n';
     
     summaryData.forEach(row => {
-      const cost = row.totalHours * row.hourlyRate;
-      csvContent += `"${row.name}","${row.position}","${row.department}",${row.totalHours.toFixed(2)},${row.overtimeHours.toFixed(2)},${row.hourlyRate.toFixed(2)},${cost.toFixed(2)},${row.entries}\n`;
+      const th = Number(row.totalHours) || 0;
+      const ot = Number(row.overtimeHours) || 0;
+      const rate = Number(row.hourlyRate) || 0;
+      const cost = th * rate;
+      csvContent += `"${row.name}","${row.position}","${row.department}",${th.toFixed(2)},${ot.toFixed(2)},${rate.toFixed(2)},${cost.toFixed(2)},${row.entries}\n`;
     });
     
-    csvContent += `\nTotals,,,${totalHours.toFixed(2)},${totalOvertime.toFixed(2)},,${totalCost.toFixed(2)},${entries.length}\n`;
+    const sumH = Number(totalHours) || 0;
+    const sumO = Number(totalOvertime) || 0;
+    const sumC = Number(totalCost) || 0;
+    csvContent += `\nTotals,,,${sumH.toFixed(2)},${sumO.toFixed(2)},,${sumC.toFixed(2)},${entries.length}\n`;
     
     // Add detailed entries
     csvContent += '\n\nDetailed Time Entries\n';
@@ -289,15 +295,15 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
             <div className="text-sm text-muted-foreground">Employees</div>
           </div>
           <div className="text-center p-4 bg-muted/50 rounded-lg">
-            <div className="text-2xl font-bold">{totalHours.toFixed(1)}h</div>
+            <div className="text-2xl font-bold">{(Number(totalHours) || 0).toFixed(1)}h</div>
             <div className="text-sm text-muted-foreground">Total Hours</div>
           </div>
           <div className="text-center p-4 bg-muted/50 rounded-lg">
-            <div className="text-2xl font-bold text-amber-600">{totalOvertime.toFixed(1)}h</div>
+            <div className="text-2xl font-bold text-amber-600">{(Number(totalOvertime) || 0).toFixed(1)}h</div>
             <div className="text-sm text-muted-foreground">Overtime</div>
           </div>
           <div className="text-center p-4 bg-muted/50 rounded-lg">
-            <div className="text-2xl font-bold text-green-600">${totalCost.toFixed(0)}</div>
+            <div className="text-2xl font-bold text-green-600">${(Number(totalCost) || 0).toFixed(0)}</div>
             <div className="text-sm text-muted-foreground">Est. Cost</div>
           </div>
         </div>
@@ -342,18 +348,18 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
                     <Badge variant="outline">{row.department}</Badge>
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {row.totalHours.toFixed(1)}h
+                    {(Number(row.totalHours) || 0).toFixed(1)}h
                   </TableCell>
                   <TableCell className="text-right">
-                    {row.overtimeHours > 0 ? (
-                      <span className="text-amber-600">{row.overtimeHours.toFixed(1)}h</span>
+                    {Number(row.overtimeHours) > 0 ? (
+                      <span className="text-amber-600">{(Number(row.overtimeHours) || 0).toFixed(1)}h</span>
                     ) : '-'}
                   </TableCell>
                   <TableCell className="text-right">
-                    ${row.hourlyRate.toFixed(2)}
+                    ${(Number(row.hourlyRate) || 0).toFixed(2)}
                   </TableCell>
                   <TableCell className="text-right text-green-600">
-                    ${(row.totalHours * row.hourlyRate).toFixed(0)}
+                    ${((Number(row.totalHours) || 0) * (Number(row.hourlyRate) || 0)).toFixed(0)}
                   </TableCell>
                   <TableCell className="text-right">{row.entries}</TableCell>
                 </TableRow>

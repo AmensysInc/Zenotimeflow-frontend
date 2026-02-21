@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   CheckSquare,
   Calendar,
@@ -41,11 +41,12 @@ type UserRole = 'user' | 'admin' | 'super_admin' | 'operations_manager' | 'manag
 
 export function AppSidebar() {
   const { state } = useSidebar();
-  const { user } = useAuth();
+  const { user, role: authRole } = useAuth(); // Use role from auth context
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [userAppType, setUserAppType] = useState<string | null>(null);
   const [isEmployeeLinked, setIsEmployeeLinked] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const currentPath = location.pathname;
   const collapsed = state === "collapsed";
 
@@ -53,7 +54,12 @@ export function AppSidebar() {
     const fetchUserData = async () => {
       if (!user) return;
       
-      // Fetch user roles
+      // Use role from auth context if available, otherwise fetch
+      if (authRole) {
+        setUserRole(authRole);
+      }
+      
+      // Fetch user roles for app_type determination
       const userData = await apiClient.getCurrentUser() as any;
       const rolesData = userData?.roles || [];
       
@@ -66,45 +72,51 @@ export function AppSidebar() {
       }
       
       if (rolesData && rolesData.length > 0) {
-        const roles = rolesData.map((item: any) => item.role as UserRole);
+        const roles = rolesData.map((item: any) => (item.role ?? item.name) as UserRole);
         const appTypes = rolesData.map((item: any) => item.app_type);
         
-        // Determine primary role
-        if (roles.includes('super_admin')) {
-          setUserRole('super_admin');
+        // Determine primary role (use authRole if available, otherwise determine from roles)
+        let primaryRole: UserRole | null = authRole || null;
+        if (!primaryRole && roles.length > 0) {
+          if (roles.includes('super_admin')) {
+            primaryRole = 'super_admin';
+          } else if (roles.includes('operations_manager')) {
+            primaryRole = 'operations_manager';
+          } else if (roles.includes('manager')) {
+            primaryRole = 'manager';
+          } else if (roles.includes('admin')) {
+            primaryRole = 'admin';
+          } else if (roles.includes('employee')) {
+            primaryRole = 'employee';
+          } else if (roles.includes('house_keeping')) {
+            primaryRole = 'house_keeping';
+          } else if (roles.includes('maintenance')) {
+            primaryRole = 'maintenance';
+          } else {
+            primaryRole = 'user';
+          }
+        }
+        
+        setUserRole(primaryRole);
+        
+        // Determine app type based on role
+        if (primaryRole === 'super_admin') {
           setUserAppType('both');
-        } else if (roles.includes('operations_manager')) {
-          setUserRole('operations_manager');
-          // Organization Managers need full scheduler access
+        } else if (primaryRole === 'operations_manager' || primaryRole === 'manager' || primaryRole === 'admin') {
           setUserAppType('scheduler');
-        } else if (roles.includes('manager')) {
-          setUserRole('manager');
-         // Company Managers are part of the Scheduler app (they manage employees + schedules)
-         setUserAppType('scheduler');
-        } else if (roles.includes('admin')) {
-          setUserRole('admin');
-          setUserAppType('scheduler');
-        } else if (roles.includes('employee')) {
-          setUserRole('employee');
-          setUserAppType('employee');
-        } else if (roles.includes('house_keeping')) {
-          setUserRole('house_keeping');
-          setUserAppType('employee');
-        } else if (roles.includes('maintenance')) {
-          setUserRole('maintenance');
+        } else if (primaryRole === 'employee' || primaryRole === 'house_keeping' || primaryRole === 'maintenance') {
           setUserAppType('employee');
         } else {
-          setUserRole('user');
           setUserAppType(appTypes[0] || 'calendar');
         }
       } else {
-        setUserRole(null);
+        setUserRole(authRole || null);
         setUserAppType('calendar');
       }
     };
 
     fetchUserData();
-  }, [user]);
+  }, [user, authRole]);
 
   // Main features - available to all users
   const mainItems = [
@@ -114,18 +126,19 @@ export function AppSidebar() {
     { title: "Daily Routines", url: "/habits", icon: Target },
   ];
 
-  // Employee-specific items (schedule view)
+  // Employee-specific items: own dashboard and own schedule (not manager schedule)
   const employeeItems = [
-    { title: "My Dashboard", url: "/scheduler/my-dashboard", icon: LayoutDashboard },
-    { title: "Schedule", url: "/scheduler/schedule", icon: Calendar },
+    { title: "My Dashboard", url: "/employee/dashboard", icon: LayoutDashboard },
+    { title: "My Schedule", url: "/scheduler/employee-schedule", icon: Calendar },
   ];
 
-  // Admin scheduler items
+  // Admin scheduler items - super_admin sees all
   const schedulerAdminItems = [
     { title: "Companies", url: "/scheduler/companies", icon: Building },
     { title: "Schedule", url: "/scheduler/schedule", icon: Calendar },
     { title: "Employees", url: "/scheduler/employees", icon: UserCheck },
     { title: "Employee Schedule", url: "/scheduler/employee-schedule", icon: CalendarClock },
+    { title: "Time Clock", url: "/scheduler/time-clock", icon: Clock },
     { title: "Missed Shifts", url: "/scheduler/missed-shifts", icon: AlertTriangle },
   ];
 
@@ -154,19 +167,26 @@ export function AppSidebar() {
 
   // Determine which sections to show based on role hierarchy
   // Operational staff includes employee, house_keeping, and maintenance
+  // Note: super_admin and admin have their own role, so they won't be operational staff
   const isOperationalStaff = userRole === 'employee' || userRole === 'house_keeping' || userRole === 'maintenance';
   
   const showMainFeatures = isOperationalStaff || 
-    userRole === 'manager' || userRole === 'super_admin' || userRole === 'operations_manager' ||
+    userRole === 'manager' || userRole === 'super_admin' || userRole === 'admin' || userRole === 'operations_manager' ||
     userAppType === 'calendar' || userAppType === 'both' || userAppType === 'calendar_plus';
   
-  const showEmployeeSection = (isOperationalStaff && isEmployeeLinked);
+  // Show employee section for all operational staff so they can open dashboard (page shows "Not an Employee" if not linked)
+  const showEmployeeSection = isOperationalStaff;
   
+  // Super admin and admin ALWAYS see scheduler section, regardless of other roles
   const showSchedulerAdmin = userRole === 'super_admin' || userRole === 'admin' || 
     userRole === 'operations_manager' || userRole === 'manager' ||
     userAppType === 'scheduler' || userAppType === 'both';
 
   const schedulerItemsForRole = (() => {
+    // Super admin sees ALL scheduler items
+    if (userRole === 'super_admin' || userRole === 'admin') {
+      return schedulerAdminItems;
+    }
     if (userRole === 'manager') {
       return schedulerAdminItems.filter((item) => item.title !== 'Companies');
     }
@@ -188,7 +208,7 @@ export function AppSidebar() {
                 {mainItems.map((item) => (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
-                      <NavLink to={item.url} end className={getNavCls}>
+                      <NavLink to={item.url} className={getNavCls}>
                         <item.icon className="h-4 w-4" />
                         {!collapsed && <span>{item.title}</span>}
                       </NavLink>
@@ -209,7 +229,7 @@ export function AppSidebar() {
                 {employeeItems.map((item) => (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
-                      <NavLink to={item.url} end className={getNavCls}>
+                      <NavLink to={item.url} className={getNavCls}>
                         <item.icon className="h-4 w-4" />
                         {!collapsed && <span>{item.title}</span>}
                       </NavLink>
@@ -221,8 +241,9 @@ export function AppSidebar() {
           </SidebarGroup>
         )}
 
-        {/* Scheduler Admin Section - for admins only, not regular employees */}
-        {showSchedulerAdmin && !isOperationalStaff && (
+        {/* Scheduler Admin Section - for admins, super_admins, managers, operations_managers */}
+        {/* Super admin and admin ALWAYS see this section, even if they have employee role */}
+        {showSchedulerAdmin && (
           <SidebarGroup>
             <SidebarGroupLabel>
               {userAppType === 'calendar_plus' ? 'Companies' : 'Scheduler'}
@@ -232,7 +253,7 @@ export function AppSidebar() {
                 {userAppType === 'calendar_plus' ? (
                   <SidebarMenuItem>
                     <SidebarMenuButton asChild>
-                      <NavLink to="/scheduler/companies" end className={getNavCls}>
+                      <NavLink to="/scheduler/companies" className={getNavCls}>
                         <Building className="h-4 w-4" />
                         {!collapsed && <span>Companies</span>}
                       </NavLink>
@@ -242,7 +263,7 @@ export function AppSidebar() {
                   schedulerItemsForRole.map((item) => (
                     <SidebarMenuItem key={item.title}>
                       <SidebarMenuButton asChild>
-                        <NavLink to={item.url} end className={getNavCls}>
+                        <NavLink to={item.url} className={getNavCls}>
                           <item.icon className="h-4 w-4" />
                           {!collapsed && <span>{item.title}</span>}
                         </NavLink>
@@ -263,7 +284,7 @@ export function AppSidebar() {
               {getManagementItems().map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild>
-                    <NavLink to={item.url} end className={getNavCls}>
+                    <NavLink to={item.url} className={getNavCls}>
                       <item.icon className="h-4 w-4" />
                       {!collapsed && <span>{item.title}</span>}
                     </NavLink>

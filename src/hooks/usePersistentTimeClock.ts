@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { toast } from "sonner";
 
 const ACTIVE_CLOCK_KEY = 'active_time_clock';
@@ -299,9 +300,10 @@ export const usePersistentTimeClock = () => {
       setEmployeeId(employee.id);
 
       // Check for active time clock entry in database
-      const entries = await apiClient.get<TimeClockEntry[]>('/scheduler/time-clock/', {
+      const rawEntries = await apiClient.get<any>('/scheduler/time-clock/', {
         employee: employee.id
       });
+      const entries = ensureArray(rawEntries);
       const activeEntryData = entries.find(entry => entry.clock_in && !entry.clock_out);
 
       if (activeEntryData) {
@@ -516,6 +518,8 @@ export const usePersistentTimeClock = () => {
         const breakMinutes = (breakEnd.getTime() - breakStart.getTime()) / (1000 * 60);
         totalMinutes -= breakMinutes;
       }
+      
+      const totalHours = Math.round((totalMinutes / 60) * 100) / 100;
       
       await apiClient.post('/scheduler/time-clock/clock_out/', {
         employee_id: employeeId,

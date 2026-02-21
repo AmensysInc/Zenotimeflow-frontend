@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 // Supabase removed - using Django API
 import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
+import apiClient from "@/lib/api-client";
+import { formatPhoneUS, parsePhoneUS } from "@/lib/utils";
 
 interface Organization {
   id: string;
@@ -45,13 +47,17 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
     organization_manager_id: ""
   });
 
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData(prev => ({ ...prev, phone: formatPhoneUS(e.target.value) }));
+  };
+
   useEffect(() => {
     if (open && organization) {
       setFormData({
         name: organization.name || "",
         color: organization.color || "#6366f1",
         address: organization.address || "",
-        phone: organization.phone || "",
+        phone: formatPhoneUS(organization.phone) || "",
         email: organization.email || "",
         organization_manager_id: organization.organization_manager_id || ""
       });
@@ -62,9 +68,11 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
   const fetchAvailableUsers = async () => {
     try {
       // Get users with operations_manager role for organization manager assignment
-      const allUsers = await apiClient.get<any[]>('/auth/users/');
+      const rawUsers = await apiClient.get<any>('/auth/users/');
+      const allUsers = Array.isArray(rawUsers) ? rawUsers : (rawUsers && typeof rawUsers === 'object' && Array.isArray((rawUsers as any).results) ? (rawUsers as any).results : []);
+      
       const opsManagerUsers = allUsers.filter((u: any) => {
-        const roles = u.roles || [];
+        const roles = Array.isArray(u.roles) ? u.roles : [];
         return roles.some((r: any) => r.role === 'operations_manager') &&
                u.profile?.status !== 'deleted' &&
                (u.profile?.status === 'active' || !u.profile?.status);
@@ -92,7 +100,7 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
         name: formData.name,
         color: formData.color,
         address: formData.address || null,
-        phone: formData.phone || null,
+        phone: formData.phone ? parsePhoneUS(formData.phone) : null,
         email: formData.email || null,
         organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
       });
@@ -100,9 +108,10 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
       onSuccess?.();
       onOpenChange(false);
       toast.success("Organization updated successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating organization:', error);
-      toast.error("Failed to update organization");
+      const errorMessage = error?.message || error?.detail || "Failed to update organization";
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -181,9 +190,11 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
               <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
+                type="tel"
                 value={formData.phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                onChange={handlePhoneChange}
                 placeholder="(555) 123-4567"
+                maxLength={14}
               />
             </div>
 

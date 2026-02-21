@@ -165,27 +165,19 @@ export const useCalendarShiftNotification = () => {
 
       console.log('Found shifts for today:', shifts.length, 'Current time:', now.toISOString());
 
-      // Find the next upcoming shift (within 5 minutes before or already started within last 15 minutes)
+      // Find the next upcoming shift: notification bar 15 minutes before; banner stays up to 15 min after start
       for (const shift of shifts) {
         const startTime = parseISO(shift.start_time);
         const minutesUntilStart = differenceInMinutes(startTime, now);
 
-        console.log('Checking shift:', shift.id, 'Start:', shift.start_time, 'Minutes until start:', minutesUntilStart);
-
-        // Banner appears 5 minutes before shift starts and stays visible up to 15 minutes after start
-        // (only if the employee hasn't clocked in - handled above via activeEntry).
-        if (minutesUntilStart <= 5 && minutesUntilStart >= -15) {
-          console.log('Setting upcoming shift (banner window):', shift.id, 'Minutes until start:', minutesUntilStart);
+        // Banner appears 15 minutes before shift starts and stays visible up to 15 minutes after start
+        if (minutesUntilStart <= 15 && minutesUntilStart >= -15) {
           setUpcomingShift(shift);
-          
-          // Show notification modal if within 5 minutes of start AND not already shown
           const notificationKey = `${shift.id}-${today}`;
           const dismissedKey = `${shift.id}-dismissed`;
-          
-          // Modal should only show BEFORE shift start (not after)
-          if (minutesUntilStart <= 5 && minutesUntilStart > 0) {
+          // Show notification modal 15 minutes before shift start (not after)
+          if (minutesUntilStart <= 15 && minutesUntilStart > 0) {
             if (!wasNotificationShown(notificationKey) && !wasNotificationShown(dismissedKey)) {
-              console.log('Showing notification for shift:', shift.id);
               setShowNotification(true);
               setNotificationShift(shift);
               markNotificationShown(notificationKey);

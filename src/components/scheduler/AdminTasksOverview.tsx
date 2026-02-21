@@ -71,11 +71,10 @@ export default function AdminTasksOverview({ companyId }: AdminTasksOverviewProp
             ? `${employee.first_name} ${employee.last_name}`
             : 'Unknown',
         };
-      }).sort((a: any, b: any) => 
+      }).sort((a: any, b: any) =>
         new Date(a.start_time || 0).getTime() - new Date(b.start_time || 0).getTime()
       );
-        setTasks(enrichedTasks);
-      }
+      setTasks(enrichedTasks);
       setLoading(false);
     };
     

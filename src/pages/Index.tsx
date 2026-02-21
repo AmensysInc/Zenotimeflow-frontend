@@ -10,10 +10,9 @@ const Index = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // If user is authenticated, redirect to calendar
+    // Logged-in users: send to app so AppRouter + RedirectToUserHome can show role dashboard
     if (!isLoading && user) {
-      console.log("User is authenticated, redirecting to calendar");
-      navigate("/calendar");
+      navigate("/dashboard", { replace: true });
     }
   }, [user, isLoading, navigate]);
 
@@ -27,10 +26,15 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="absolute top-4 left-4 flex items-center gap-3">
-        <img src="/lovable-uploads/dfd7bdde-fe82-4a7a-b7bd-d93fa625c987.png" alt="Zeno TimeFlow Logo" className="h-16 w-auto" />
-        <span className="text-2xl font-bold text-foreground">Zeno Time Flow</span>
-      </div>
+      <header className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-4">
+        <div className="flex items-center gap-3">
+          <img src="/lovable-uploads/dfd7bdde-fe82-4a7a-b7bd-d93fa625c987.png" alt="Zeno TimeFlow Logo" className="h-16 w-auto" />
+          <span className="text-2xl font-bold text-foreground">Zeno Time Flow</span>
+        </div>
+        <Button asChild variant="outline" size="default">
+          <Link to="/auth">Sign In</Link>
+        </Button>
+      </header>
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center max-w-2xl mx-auto px-4">
           <h1 className="text-4xl font-bold mb-4">Manage Your Time, Boost Your Productivity</h1>

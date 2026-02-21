@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
+import React from "react";
 import { Plus, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
+import { useUserRole } from "@/hooks/useUserRole";
 import { useCompanies, useOrganizations } from "@/hooks/useSchedulerDatabase";
 import apiClient from "@/lib/api-client";
 import CreateCompanyModal from "@/components/scheduler/CreateCompanyModal";
@@ -11,12 +13,15 @@ import AssignManagerModal from "@/components/scheduler/AssignManagerModal";
 import CreateOrganizationModal from "@/components/scheduler/CreateOrganizationModal";
 import EditOrganizationModal from "@/components/scheduler/EditOrganizationModal";
 import OrganizationCard from "@/components/scheduler/OrganizationCard";
+import CompanyCard from "@/components/scheduler/CompanyCard";
 import { toast } from "sonner";
 
 export default function Companies() {
   const { user } = useAuth();
-  const { companies, loading: companiesLoading, fetchCompanies } = useCompanies();
-  const { organizations, loading: orgsLoading, fetchOrganizations } = useOrganizations();
+  const { role, isOrganizationManager, isLoading: roleLoading } = useUserRole();
+  const orgManagerId = isOrganizationManager && user?.id ? user.id : undefined;
+  const { companies, loading: companiesLoading, fetchCompanies } = useCompanies(undefined, orgManagerId);
+  const { organizations, loading: orgsLoading, fetchOrganizations } = useOrganizations(orgManagerId);
   
   const [showCreateCompanyModal, setShowCreateCompanyModal] = useState(false);
   const [showEditCompanyModal, setShowEditCompanyModal] = useState(false);
@@ -28,49 +33,27 @@ export default function Companies() {
   const [selectedCompany, setSelectedCompany] = useState<any>(null);
   const [selectedOrganization, setSelectedOrganization] = useState<any>(null);
   const [selectedOrgIdForCompany, setSelectedOrgIdForCompany] = useState<string>("");
-  const [userRole, setUserRole] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchUserRole = async () => {
-      if (!user) return;
-      
-      const userData = await apiClient.getCurrentUser() as any;
-      const roles = userData?.roles || [];
-      const roleNames = roles.map((r: any) => r.role);
-      
-      // Also check if user is in employees table
-      try {
-        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-        const hasEmployee = employees && employees.length > 0;
-        
-        if (roleNames.includes('super_admin')) {
-          setUserRole('super_admin');
-        } else if (roleNames.includes('operations_manager')) {
-          setUserRole('operations_manager');
-        } else if (roleNames.includes('manager')) {
-          setUserRole('manager');
-        } else if (roleNames.includes('admin')) {
-          setUserRole('admin');
-        } else if (roleNames.includes('employee') || hasEmployee) {
-          setUserRole('employee');
-        } else {
-          setUserRole('user');
-        }
-      } catch {
-        if (roleNames.includes('employee')) {
-          setUserRole('employee');
-        } else {
-          setUserRole('user');
-        }
-      }
-    };
-
-    fetchUserRole();
-  }, [user]);
-
-  const canCreateOrganization = userRole === 'super_admin';
-  const canCreateCompany = userRole === 'super_admin' || userRole === 'operations_manager';
-  const canEditCompany = userRole === 'super_admin' || userRole === 'operations_manager';
+  const canCreateOrganization = role === 'super_admin';
+  const canCreateCompany = role === 'super_admin' || role === 'operations_manager';
+  const canEditCompany = role === 'super_admin' || role === 'operations_manager';
+  
+  // For company managers: filter to only show their assigned company
+  const filteredCompanies = React.useMemo(() => {
+    if (role === 'manager' && user) {
+      return companies.filter(c => c.company_manager_id === user.id);
+    }
+    return companies;
+  }, [companies, role, user]);
+  
+  // For company managers: filter organizations to only show orgs with their company
+  const filteredOrganizations = React.useMemo(() => {
+    if (role === 'manager' && filteredCompanies.length > 0) {
+      const orgIds = new Set(filteredCompanies.map(c => c.organization_id).filter(Boolean));
+      return organizations.filter(org => orgIds.has(org.id));
+    }
+    return organizations;
+  }, [organizations, filteredCompanies, role]);
 
   const handleEditOrganization = (org: any) => {
     setSelectedOrganization(org);
@@ -102,7 +85,7 @@ export default function Companies() {
     fetchOrganizations();
   };
 
-  const loading = companiesLoading || orgsLoading;
+  const loading = companiesLoading || orgsLoading || roleLoading;
 
   if (loading) {
     return (
@@ -135,10 +118,9 @@ export default function Companies() {
                 Create Organization
               </Button>
             )}
-            {!canCreateOrganization && canCreateCompany && organizations.length > 0 && (
+            {!canCreateOrganization && canCreateCompany && (organizations.length > 0 || isOrganizationManager) && (
               <Button 
                 onClick={() => {
-                  // For org managers, use their first organization
                   setSelectedOrgIdForCompany(organizations[0]?.id || "");
                   setShowCreateCompanyModal(true);
                 }}
@@ -151,40 +133,80 @@ export default function Companies() {
           </div>
         </div>
 
-        <div className="space-y-6">
-          {organizations.map((org) => (
-            <OrganizationCard
-              key={org.id}
-              organization={org}
-              companies={companies}
-              canEdit={canEditCompany}
-              canCreateCompany={canCreateCompany}
-              onEditOrganization={handleEditOrganization}
-              onCreateCompany={handleCreateCompany}
-              onEditCompany={handleEditCompany}
-              onViewCompany={handleViewCompany}
-              onAssignManager={handleAssignManager}
-            />
-          ))}
-        </div>
-
-        {organizations.length === 0 && (
-          <div className="text-center py-12">
-            <Building2 className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-xl font-semibold mb-2">No organizations found</h3>
-            <p className="text-muted-foreground mb-6">
-              {canCreateOrganization 
-                ? "Create your first organization to get started" 
-                : "No organizations have been created yet"
-              }
-            </p>
-            {canCreateOrganization && (
-              <Button onClick={() => setShowCreateOrgModal(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Create Organization
-              </Button>
+        {/* Organization manager: flat list of companies only (no org cards) */}
+        {isOrganizationManager ? (
+          <div className="space-y-6">
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredCompanies.map((company) => (
+                <CompanyCard
+                  key={company.id}
+                  company={company}
+                  canEdit={canEditCompany}
+                  onEdit={() => handleEditCompany(company)}
+                  onView={() => handleViewCompany(company)}
+                  onAssignManager={() => handleAssignManager(company)}
+                />
+              ))}
+            </div>
+            {filteredCompanies.length === 0 && (
+              <div className="text-center py-12">
+                <Building2 className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-xl font-semibold mb-2">No companies in your organization</h3>
+                <p className="text-muted-foreground mb-6">
+                  {canCreateCompany ? "Create a company to get started" : "No companies have been added yet"}
+                </p>
+                {canCreateCompany && organizations[0]?.id && (
+                  <Button onClick={() => { setSelectedOrgIdForCompany(organizations[0].id); setShowCreateCompanyModal(true); }}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Create Company
+                  </Button>
+                )}
+              </div>
             )}
           </div>
+        ) : (
+          <>
+            <div className="space-y-6">
+              {filteredOrganizations.map((org) => (
+                <OrganizationCard
+                  key={org.id}
+                  organization={org}
+                  companies={filteredCompanies.filter(c => c.organization_id === org.id)}
+                  canEdit={canEditCompany}
+                  canCreateCompany={canCreateCompany}
+                  onEditOrganization={handleEditOrganization}
+                  onCreateCompany={handleCreateCompany}
+                  onEditCompany={handleEditCompany}
+                  onViewCompany={handleViewCompany}
+                  onAssignManager={handleAssignManager}
+                />
+              ))}
+            </div>
+
+            {filteredOrganizations.length === 0 && (
+              <div className="text-center py-12">
+                <Building2 className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-xl font-semibold mb-2">No organizations found</h3>
+                <p className="text-muted-foreground mb-6">
+                  {canCreateOrganization 
+                    ? "Create your first organization to get started" 
+                    : "No organizations have been created yet"
+                  }
+                </p>
+                {canCreateOrganization && (
+                  <Button onClick={() => setShowCreateOrgModal(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Create Organization
+                  </Button>
+                )}
+                {role === 'manager' && filteredCompanies.length > 0 && (
+                  <div className="text-sm text-muted-foreground">
+                    Viewing your assigned company only
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
 

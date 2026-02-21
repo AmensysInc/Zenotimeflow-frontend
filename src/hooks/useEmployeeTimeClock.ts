@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import apiClient from '@/lib/api-client';
+import { ensureArray } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -61,21 +62,23 @@ export function useEmployeeTimeClock() {
   // Get employee record for current user
   useEffect(() => {
     const fetchEmployee = async () => {
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
       
       try {
-        const employees = await apiClient.get<any[]>('/scheduler/employees/', { user: user.id });
-        const employee = employees?.[0];
+        const raw = await apiClient.get<any>('/scheduler/employees/', { user: user.id });
+        const list = ensureArray(raw);
+        const first = list[0];
         
-        if (!employee) {
-          console.log('No employee record found for user');
+        if (!first) {
           setLoading(false);
           return;
         }
         
-        setEmployee(employee as EmployeeRecord);
+        setEmployee(first as EmployeeRecord);
       } catch (error) {
-        console.log('No employee record found for user');
         setLoading(false);
       }
     };
@@ -91,14 +94,14 @@ export function useEmployeeTimeClock() {
     }
     
     try {
-      const data = await apiClient.get<TimeClockEntry[]>('/scheduler/time-clock/', {
+      const data = await apiClient.get<any>('/scheduler/time-clock/', {
         employee: employee.id
       });
-      
-      setEntries(data || []);
+      const list = ensureArray(data);
+      setEntries(list);
       
       // Find active entry (clocked in but not out)
-      const active = data?.find(entry => entry.clock_in && !entry.clock_out);
+      const active = list.find(entry => entry.clock_in && !entry.clock_out);
       setActiveEntry(active || null);
     } catch (error) {
       console.error('Error fetching time entries:', error);
@@ -275,9 +278,9 @@ export function useEmployeeTimeClock() {
     }
   };
 
-  // Calculate total hours for a period
+  // Calculate total hours for a period (coerce to number in case API returns string)
   const calculatePeriodHours = (periodEntries: TimeClockEntry[]) => {
-    return periodEntries.reduce((sum, entry) => sum + (entry.total_hours || 0), 0);
+    return periodEntries.reduce((sum, entry) => sum + Number(entry.total_hours || 0), 0);
   };
 
   return {

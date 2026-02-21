@@ -20,9 +20,11 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
+            {/* Exact paths first so /auth and /admin are not swallowed by splat */}
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/admin" element={<AdminAuth />} />
+            {/* All other paths: require auth, then Layout + nested routes */}
             <Route path="/*" element={<AppRouter />} />
           </Routes>
         </BrowserRouter>

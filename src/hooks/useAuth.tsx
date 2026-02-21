@@ -1,5 +1,8 @@
 import { useState, useEffect, createContext, useContext } from "react";
 import apiClient from "@/lib/api-client";
+import { type UserRole, getPrimaryRole } from "@/types/auth";
+
+export type { UserRole };
 
 interface User {
   id: string;
@@ -7,10 +10,18 @@ interface User {
   full_name?: string;
   avatar_url?: string;
   status?: string;
+  roles?: { role?: string }[];
+  /** Set by backend when user has assigned company (e.g. company manager). */
+  company_id?: string | null;
+  assigned_company?: string | null;
+  /** Set by backend when user has assigned organization (e.g. operations manager). */
+  organization_id?: string | null;
 }
 
 interface AuthContextType {
   user: User | null;
+  /** Primary role derived from backend user.roles; used for routing and RBAC. */
+  role: UserRole | null;
   session: { access_token: string } | null;
   isLoading: boolean;
   signOut: () => Promise<void>;
@@ -20,31 +31,32 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<UserRole | null>(null);
   const [session, setSession] = useState<{ access_token: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
 
-    // Check for existing session first
     const initializeAuth = async () => {
       try {
         const token = apiClient.getToken();
         if (token) {
           try {
-            const userData = await apiClient.getCurrentUser();
-            if (isMounted) {
-              console.log('Initial session check:', userData?.email || 'No user');
-              setUser(userData as User);
+            const userData = (await apiClient.getCurrentUser()) as User | undefined;
+            if (isMounted && userData) {
+              const primaryRole = getPrimaryRole(userData?.roles);
+              setUser(userData);
+              setRole(primaryRole);
               setSession({ access_token: token });
-              setIsLoading(false);
             }
+            if (isMounted) setIsLoading(false);
           } catch (error) {
-            console.error('Error getting user:', error);
-            // Token might be invalid, clear it
+            console.error("Auth init: getCurrentUser failed", error);
             apiClient.setToken(null);
             if (isMounted) {
               setUser(null);
+              setRole(null);
               setSession(null);
               setIsLoading(false);
             }
@@ -52,51 +64,37 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         } else {
           if (isMounted) {
             setUser(null);
+            setRole(null);
             setSession(null);
             setIsLoading(false);
           }
         }
       } catch (error) {
-        console.error('Auth initialization error:', error);
-        if (isMounted) {
-          setIsLoading(false);
-        }
+        console.error("Auth initialization error:", error);
+        if (isMounted) setIsLoading(false);
       }
     };
 
-    // Initialize auth
     initializeAuth();
   }, []);
 
   const signOut = async () => {
-    console.log('Signing out user...');
-    
     try {
-      // Clear local state immediately
       setUser(null);
+      setRole(null);
       setSession(null);
-      
-      // Perform Django logout
       await apiClient.logout();
-      
-      console.log('Sign out completed, redirecting to home...');
-      
-      // Force redirect to home page
-      window.location.href = '/';
     } catch (error) {
-      console.error('Error during sign out:', error);
-      
-      // Force cleanup and redirect even if signOut fails
+      console.error("Error during sign out:", error);
       setUser(null);
+      setRole(null);
       setSession(null);
-      
-      // Fallback redirect to home page
-      window.location.href = '/';
     }
+    window.location.href = "/";
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, isLoading, signOut }}>
+    <AuthContext.Provider value={{ user, role, session, isLoading, signOut }}>
       {children}
     </AuthContext.Provider>
   );

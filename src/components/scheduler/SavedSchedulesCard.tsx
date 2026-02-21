@@ -3,7 +3,8 @@ import { Calendar, Edit, Trash2, Clock, Users, Copy } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-// Supabase removed - using Django API
+import apiClient from "@/lib/api-client";
+import { ensureArray } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { format, parseISO } from "date-fns";
 import {
@@ -79,12 +80,13 @@ export default function SavedSchedulesCard({
   const fetchSavedSchedules = async () => {
     setLoading(true);
     try {
-      const templates = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+      const raw = await apiClient.get<any>('/scheduler/schedule-templates/', {
         company: companyId
       });
+      const templates = ensureArray(raw);
       
       // Parse template_data from JSON
-      const parsedData = (data || []).map(item => ({
+      const parsedData = templates.map((item: any) => ({
         ...item,
         template_data: typeof item.template_data === 'string' 
           ? JSON.parse(item.template_data) 
@@ -113,9 +115,10 @@ export default function SavedSchedulesCard({
       // If duplicates exist for the same week, delete all for that week to avoid "ghost" schedules.
       // (User typically expects the week to disappear entirely.)
       if (weekStart) {
-        const templates = await apiClient.get<any[]>('/scheduler/schedule-templates/', {
+        const raw = await apiClient.get<any>('/scheduler/schedule-templates/', {
           company: companyId
         });
+        const templates = ensureArray(raw);
         const matchingTemplates = templates.filter((t: any) => {
           const data = typeof t.template_data === 'string' 
             ? JSON.parse(t.template_data) 

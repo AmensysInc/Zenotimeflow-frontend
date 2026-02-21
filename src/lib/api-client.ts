@@ -1,12 +1,41 @@
 /**
- * Django API Client
- * Replaces Supabase client for API calls
+ * Django API Client – Zeno-time-flow
+ * Handles auth (login/logout/getCurrentUser), token storage, and authenticated requests.
+ * Base URL: VITE_API_URL or http://localhost:8000/api
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, any>;
+}
+
+/** Backend may return access/refresh or access_token/refresh_token */
+function getAccessToken(data: any): string | undefined {
+  return data?.access ?? data?.access_token;
+}
+function getRefreshToken(data: any): string | undefined {
+  return data?.refresh ?? data?.refresh_token;
+}
+
+/** Extract user-friendly message from Django-style error response (detail, message, or field errors). */
+function extractErrorMessage(err: Record<string, unknown>): string {
+  if (!err || typeof err !== "object") return "";
+  const d = err.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) return d.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ");
+  const msg = err.message;
+  if (typeof msg === "string") return msg;
+  // Field errors: { email: ["This field is required."], password: ["Too short"] }
+  const keys = Object.keys(err).filter((k) => k !== "message" && k !== "detail");
+  if (keys.length) {
+    const parts = keys.flatMap((k) => {
+      const v = (err as any)[k];
+      return Array.isArray(v) ? v : [String(v)];
+    });
+    return parts.join(" ");
+  }
+  return "";
 }
 
 class ApiClient {
@@ -15,18 +44,16 @@ class ApiClient {
 
   constructor(baseURL: string) {
     this.baseURL = baseURL;
-    // Load token from localStorage
-    if (typeof window !== 'undefined') {
-      this.token = localStorage.getItem('access_token');
+    if (typeof window !== "undefined") {
+      this.token = localStorage.getItem("access_token");
     }
   }
 
   setToken(token: string | null) {
     this.token = token;
-    if (token && typeof window !== 'undefined') {
-      localStorage.setItem('access_token', token);
-    } else if (typeof window !== 'undefined') {
-      localStorage.removeItem('access_token');
+    if (typeof window !== "undefined") {
+      if (token) localStorage.setItem("access_token", token);
+      else localStorage.removeItem("access_token");
     }
   }
 
@@ -38,44 +65,57 @@ class ApiClient {
     const url = new URL(`${this.baseURL}${endpoint}`, window.location.origin);
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
-        if (value !== null && value !== undefined) {
-          url.searchParams.append(key, String(value));
-        }
+        if (value != null) url.searchParams.append(key, String(value));
       });
     }
     return url.toString();
   }
 
-  private async request<T>(
-    endpoint: string,
-    options: RequestOptions = {}
-  ): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const { params, ...fetchOptions } = options;
     const url = this.buildURL(endpoint, params);
 
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-      ...fetchOptions.headers,
-    };
+    // Use in-memory token, or re-read from localStorage (e.g. after login in same session)
+    const token = this.token ?? (typeof window !== "undefined" ? localStorage.getItem("access_token") : null);
+    if (token) this.token = token;
 
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+      ...(fetchOptions.headers as Record<string, string>),
+    };
+    if (token) {
+      (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
     }
 
-    const response = await fetch(url, {
-      ...fetchOptions,
-      headers,
-    });
+    const response = await fetch(url, { ...fetchOptions, headers });
+
+    // 401: clear token so auth context will set user to null and redirect to login
+    if (response.status === 401) {
+      this.setToken(null);
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("refresh_token");
+      }
+      const err = await response.json().catch(() => ({}));
+      throw new Error((err as any).detail || err?.message || "Unauthorized");
+    }
+
+    // 403: Forbidden - user lacks permission (keep token, surface message)
+    if (response.status === 403) {
+      const err = await response.json().catch(() => ({}));
+      const message = (err as any)?.detail || (err as any)?.message || "You don't have permission to perform this action.";
+      throw new Error(message);
+    }
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: response.statusText }));
-      throw new Error(error.message || `HTTP error! status: ${response.status}`);
+      const err = await response.json().catch(() => ({})) as Record<string, unknown>;
+      // Django REST: detail (string or array), or field errors like { email: ["..."] }
+      const message = extractErrorMessage(err);
+      throw new Error(message || `HTTP ${response.status}`);
     }
 
-    // Handle empty responses
-    const contentType = response.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      return response.json();
+    const contentType = response.headers.get("content-type");
+    if (contentType?.includes("application/json")) {
+      return response.json() as Promise<T>;
     }
     return {} as T;
   }
@@ -109,43 +149,52 @@ class ApiClient {
     return this.request<T>(endpoint, { method: 'DELETE' });
   }
 
-  // Auth methods
+  /** Login: expects backend { access, refresh, user } or { access_token, refresh_token, user }. */
   async login(email: string, password: string) {
-    const response = await this.post<{ user: any; access: string; refresh: string }>(
-      '/auth/login/',
-      { email, password }
-    );
-    this.setToken(response.access);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('refresh_token', response.refresh);
+    const response = await this.post<any>("/auth/login/", { email, password });
+    const access = getAccessToken(response);
+    const refresh = getRefreshToken(response);
+    if (!access) {
+      throw new Error("Invalid login response: no access token");
+    }
+    this.setToken(access);
+    if (typeof window !== "undefined" && refresh) {
+      localStorage.setItem("refresh_token", refresh);
     }
     return response;
   }
 
-  async register(data: { email: string; password: string; password_confirm: string; full_name?: string }) {
-    const response = await this.post<{ user: any; access: string; refresh: string }>(
-      '/auth/register/',
-      data
-    );
-    this.setToken(response.access);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('refresh_token', response.refresh);
+  async register(data: {
+    email: string;
+    password: string;
+    password_confirm: string;
+    full_name?: string;
+  }) {
+    const response = await this.post<any>("/auth/register/", data);
+    const access = getAccessToken(response);
+    const refresh = getRefreshToken(response);
+    if (access) {
+      this.setToken(access);
+      if (typeof window !== "undefined" && refresh) {
+        localStorage.setItem("refresh_token", refresh);
+      }
     }
     return response;
   }
 
   async logout() {
-    const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refresh_token') : null;
+    const refreshToken =
+      typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
     if (refreshToken) {
       try {
-        await this.post('/auth/logout/', { refresh: refreshToken });
-      } catch (error) {
-        console.error('Logout error:', error);
+        await this.post("/auth/logout/", { refresh: refreshToken });
+      } catch (e) {
+        console.error("Logout error:", e);
       }
     }
     this.setToken(null);
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('refresh_token');
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("refresh_token");
     }
   }
 
