@@ -25,9 +25,11 @@ interface MonthViewProps {
   onDeleteEvent?: (eventId: string) => void;
   onUserEventClick?: (userId: string) => void;
   getUserName?: (userId: string) => string;
+  /** When true, shifts are not shown as OVERDUE (employee is clocked in). */
+  isClockedIn?: boolean;
 }
 
-export const MonthView = ({ currentDate, events, onDateClick, onEditEvent, onDeleteEvent, onUserEventClick, getUserName }: MonthViewProps) => {
+export const MonthView = ({ currentDate, events, onDateClick, onEditEvent, onDeleteEvent, onUserEventClick, getUserName, isClockedIn }: MonthViewProps) => {
   const monthStart = startOfMonth(currentDate);
   const monthEnd = endOfMonth(currentDate);
   const calendarStart = startOfWeek(monthStart);
@@ -100,6 +102,7 @@ export const MonthView = ({ currentDate, events, onDateClick, onEditEvent, onDel
   };
 
   const isEventOverdue = (event: CalendarEvent) => {
+    if (event.event_type === 'shift' && isClockedIn) return false;
     const now = new Date();
     const eventDate = new Date(event.start_time);
     return eventDate < now && !event.all_day;

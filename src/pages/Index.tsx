@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { CLOCK_IN_LINK, CLOCK_IN_SAME_ORIGIN } from "@/lib/clock-in-url";
 import { useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useNavigate } from "react-router-dom";
@@ -31,9 +32,14 @@ const Index = () => {
           <img src="/lovable-uploads/dfd7bdde-fe82-4a7a-b7bd-d93fa625c987.png" alt="Zeno TimeFlow Logo" className="h-16 w-auto" />
           <span className="text-2xl font-bold text-foreground">Zeno Time Flow</span>
         </div>
-        <Button asChild variant="outline" size="default">
-          <Link to="/auth">Sign In</Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button asChild variant="outline" size="default">
+            <a href={CLOCK_IN_LINK} {...(!CLOCK_IN_SAME_ORIGIN && { target: "_blank", rel: "noopener noreferrer" })}>Clock In</a>
+          </Button>
+          <Button asChild variant="outline" size="default">
+            <Link to="/auth">Sign In</Link>
+          </Button>
+        </div>
       </header>
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center max-w-2xl mx-auto px-4">

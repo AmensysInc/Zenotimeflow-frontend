@@ -119,7 +119,7 @@ const LearningTemplates = () => {
       const userData = await apiClient.getCurrentUser() as any;
       const roles = userData?.roles || [];
       const roleNames = roles.map((r: any) => r.role);
-      setIsAdmin(roleNames.includes('super_admin') || roleNames.includes('manager'));
+      setIsAdmin(roleNames.includes('super_admin') || roleNames.includes('operations_manager') || roleNames.includes('manager'));
     } catch (error) {
       setIsAdmin(false);
     }
@@ -127,45 +127,113 @@ const LearningTemplates = () => {
 
   const fetchTemplates = async () => {
     try {
-      if (!isAdmin) {
-        // Regular users see only assigned templates
-        // Note: Template assignments endpoint needs to be implemented in Django
-        setTemplates([]);
-        setIsLoading(false);
-        return;
-      } else {
-        // Admins see all templates
-        // Note: Learning templates endpoint needs to be implemented in Django
-        setTemplates([]);
-      }
+      const data = await apiClient.get<any>('/templates/');
+      const list = Array.isArray(data) ? data : (data?.results ?? []);
+      setTemplates(list);
     } catch (error) {
       console.error('Error fetching templates:', error);
+      setTemplates([]);
     } finally {
       setIsLoading(false);
     }
   };
 
   const fetchTeamMembers = async () => {
-    if (!isAdmin) return;
+    if (!isAdmin || !user) return;
     
-    const users = await apiClient.get<any[]>('/auth/users/');
-    const teamMembersData = users
-      .filter((u: any) => u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
-      .map((u: any) => ({
-        user_id: u.id,
-        full_name: u.profile?.full_name || u.full_name || null,
-        email: u.email
-      }));
-    setTeamMembers(teamMembersData);
+    try {
+      const userData = await apiClient.getCurrentUser() as any;
+      const roles = userData?.roles || [];
+      const roleNames = roles.map((r: any) => r.role);
+      const isSuperAdmin = roleNames.includes('super_admin');
+      const isOrgManager = roleNames.includes('operations_manager');
+      const isCompanyManager = roleNames.includes('manager');
+
+      if (isSuperAdmin) {
+        const users = await apiClient.get<any[]>('/auth/users/');
+        const teamMembersData = (Array.isArray(users) ? users : [])
+          .filter((u: any) => u.profile?.status !== 'deleted' && (u.profile?.status === 'active' || !u.profile?.status))
+          .map((u: any) => ({
+            user_id: u.id,
+            full_name: u.profile?.full_name || u.full_name || null,
+            email: u.email
+          }));
+        setTeamMembers(teamMembersData);
+        return;
+      }
+      if (isOrgManager) {
+        const companies = await apiClient.get<any[]>('/scheduler/companies/', { operations_manager: user.id });
+        const companiesList = Array.isArray(companies) ? companies : [];
+        const companyIds = companiesList.map((c: any) => c?.id).filter(Boolean);
+        const managerIds = companiesList.map((c: any) => c?.company_manager || c?.company_manager_id).filter(Boolean);
+        const seen = new Set<string>();
+        const teamMembersData: TeamMember[] = [];
+        if (managerIds.length > 0) {
+          const usersRaw = await apiClient.get<any[]>('/auth/users/');
+          const usersList = Array.isArray(usersRaw) ? usersRaw : [];
+          usersList.filter((u: any) => managerIds.includes(u?.id)).forEach((u: any) => {
+            if (u?.id && !seen.has(u.id)) {
+              seen.add(u.id);
+              teamMembersData.push({ user_id: u.id, full_name: u?.profile?.full_name || u?.full_name || null, email: u?.email });
+            }
+          });
+        }
+        for (const companyId of companyIds) {
+          const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId, status: 'active' });
+          const list = Array.isArray(employees) ? employees : [];
+          list.filter((emp: any) => emp?.user || emp?.user_id).forEach((emp: any) => {
+            const uid = emp.user || emp.user_id;
+            if (uid && !seen.has(uid)) {
+              seen.add(uid);
+              teamMembersData.push({
+                user_id: uid,
+                full_name: `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || null,
+                email: emp?.email
+              });
+            }
+          });
+        }
+        setTeamMembers(teamMembersData);
+        return;
+      }
+      if (isCompanyManager) {
+        const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager: user.id });
+        const companiesList = Array.isArray(companies) ? companies : [];
+        const companyIds = companiesList.map((c: any) => c?.id).filter(Boolean);
+        const teamMembersData: TeamMember[] = [];
+        for (const companyId of companyIds) {
+          const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId, status: 'active' });
+          const list = Array.isArray(employees) ? employees : [];
+          list.filter((emp: any) => emp?.user || emp?.user_id).forEach((emp: any) => {
+            teamMembersData.push({
+              user_id: emp.user || emp.user_id,
+              full_name: `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || null,
+              email: emp?.email
+            });
+          });
+        }
+        setTeamMembers(teamMembersData);
+        return;
+      }
+      setTeamMembers([]);
+    } catch (error) {
+      console.error('Error fetching team members for check lists:', error);
+      setTeamMembers([]);
+    }
   };
 
   const fetchAllTemplateData = async () => {
     if (!user) return;
 
     try {
-      // Fetch assignments for all templates
-      // Note: Template assignments endpoint needs to be implemented in Django
-      setAssignments([]);
+      const assignData = await apiClient.get<any>('/templates/assignments/');
+      const assignList = Array.isArray(assignData) ? assignData : (assignData?.results ?? []);
+      setAssignments(assignList.map((a: any) => ({
+        id: a.id,
+        template_id: a.template_id ?? a.template,
+        user_id: a.user_id ?? a.user,
+        assigned_at: a.assigned_at,
+      })));
 
       // Fetch tasks for expanded templates
       const templateIds = Array.from(expandedTemplates);

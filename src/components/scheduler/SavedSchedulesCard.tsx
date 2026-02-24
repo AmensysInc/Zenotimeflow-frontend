@@ -43,6 +43,7 @@ export interface SavedSchedule {
       department_id?: string;
     }>;
     week_start: string;
+    week_end?: string;
   };
   created_at: string;
   updated_at: string;
@@ -50,18 +51,27 @@ export interface SavedSchedule {
 
 interface SavedSchedulesCardProps {
   companyId: string;
+  /** Display name for the selected company (e.g. "Gas Stations") */
+  companyName?: string;
+  /** Display name for the selected organization, if any (e.g. for super_admin) */
+  organizationName?: string;
   onLoadSchedule: (template: SavedSchedule) => void;
   onEditSchedule: (template: SavedSchedule) => void;
   onCopyToCurrentWeek?: (template: SavedSchedule) => void;
+  /** Called after a schedule (and its shifts) are deleted so the parent can refetch the shift list. */
+  onScheduleDeleted?: () => void;
   currentWeekLabel?: string;
   refreshTrigger?: number;
 }
 
 export default function SavedSchedulesCard({ 
   companyId, 
+  companyName,
+  organizationName,
   onLoadSchedule, 
   onEditSchedule,
   onCopyToCurrentWeek,
+  onScheduleDeleted,
   currentWeekLabel,
   refreshTrigger 
 }: SavedSchedulesCardProps) {
@@ -111,9 +121,37 @@ export default function SavedSchedulesCard({
     
     try {
       const weekStart = scheduleToDelete.template_data?.week_start;
+      const weekEnd = scheduleToDelete.template_data?.week_end;
+
+      // Also delete actual shifts in this schedule's date range so the calendar is cleared
+      if (companyId && weekStart) {
+        const startDate = new Date(weekStart);
+        startDate.setHours(0, 0, 0, 0);
+        const endDate = weekEnd ? new Date(weekEnd) : new Date(startDate);
+        if (!weekEnd) endDate.setDate(endDate.getDate() + 6);
+        endDate.setHours(23, 59, 59, 999);
+        try {
+          const rawShifts = await apiClient.get<any>('/scheduler/shifts/', {
+            company: companyId,
+            start_date: startDate.toISOString(),
+            end_date: endDate.toISOString()
+          });
+          const shiftsInRange = ensureArray(rawShifts);
+          for (const shift of shiftsInRange) {
+            const rawClock = await apiClient.get<any>('/scheduler/time-clock/', { shift: shift.id });
+            const clockEntries = ensureArray(rawClock);
+            await Promise.all(clockEntries.map((entry: any) =>
+              apiClient.patch(`/scheduler/time-clock/${entry.id}/`, { shift: null })
+            ));
+            await apiClient.delete(`/scheduler/shifts/${shift.id}/`);
+          }
+        } catch (err) {
+          console.error('Error clearing shifts for deleted schedule:', err);
+          // Continue to delete the template even if shift cleanup fails
+        }
+      }
 
       // If duplicates exist for the same week, delete all for that week to avoid "ghost" schedules.
-      // (User typically expects the week to disappear entirely.)
       if (weekStart) {
         const raw = await apiClient.get<any>('/scheduler/schedule-templates/', {
           company: companyId
@@ -141,11 +179,12 @@ export default function SavedSchedulesCard({
       
       toast({
         title: "Schedule Deleted",
-        description: `"${scheduleToDelete.name}" has been deleted.`
+        description: `"${scheduleToDelete.name}" and its shifts have been deleted.`
       });
       
       // Re-fetch to ensure UI matches DB
       fetchSavedSchedules();
+      onScheduleDeleted?.();
     } catch (error) {
       console.error('Error deleting schedule:', error);
       toast({
@@ -167,8 +206,9 @@ export default function SavedSchedulesCard({
     if (!template.template_data?.week_start) return "No date set";
     try {
       const weekStart = parseISO(template.template_data.week_start);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
+      const weekEnd = template.template_data.week_end
+        ? parseISO(template.template_data.week_end)
+        : (() => { const e = new Date(weekStart); e.setDate(e.getDate() + 6); return e; })();
       return `${format(weekStart, 'MMM d')} - ${format(weekEnd, 'MMM d, yyyy')}`;
     } catch {
       return "Invalid date";
@@ -200,9 +240,16 @@ export default function SavedSchedulesCard({
           <CardTitle className="flex items-center gap-2">
             <Calendar className="h-5 w-5" />
             All Schedules
+            {companyName && (
+              <span className="font-normal text-muted-foreground">
+                — {[organizationName, companyName].filter(Boolean).join(' · ')}
+              </span>
+            )}
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            View and manage your saved weekly schedules
+            {companyName
+              ? `Saved schedules for ${companyName}`
+              : 'View and manage your saved weekly schedules'}
           </p>
         </CardHeader>
         <CardContent>

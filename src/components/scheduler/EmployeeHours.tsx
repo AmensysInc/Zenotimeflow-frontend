@@ -40,8 +40,8 @@ export default function EmployeeHours({ entries }: EmployeeHoursProps) {
     return true;
   });
 
-  const totalHours = filteredEntries.reduce((sum, entry) => sum + (entry.total_hours || 0), 0);
-  const overtimeHours = filteredEntries.reduce((sum, entry) => sum + (entry.overtime_hours || 0), 0);
+  const totalHours = filteredEntries.reduce((sum, entry) => sum + (Number(entry.total_hours) || 0), 0);
+  const overtimeHours = filteredEntries.reduce((sum, entry) => sum + (Number(entry.overtime_hours) || 0), 0);
   const avgHoursPerDay = filteredEntries.length > 0 ? totalHours / filteredEntries.length : 0;
 
   const formatDuration = (hours: number | null) => {
@@ -66,10 +66,10 @@ export default function EmployeeHours({ entries }: EmployeeHoursProps) {
         breakDuration = Math.round((breakEnd.getTime() - breakStart.getTime()) / (1000 * 60));
       }
       
-      csvContent += `${date},${clockIn},${clockOut},${breakDuration}min,${(entry.total_hours || 0).toFixed(2)},${(entry.overtime_hours || 0).toFixed(2)}\n`;
+      csvContent += `${date},${clockIn},${clockOut},${breakDuration}min,${(Number(entry.total_hours) || 0).toFixed(2)},${(Number(entry.overtime_hours) || 0).toFixed(2)}\n`;
     });
     
-    csvContent += `\nTotal Hours,,,,${totalHours.toFixed(2)},${overtimeHours.toFixed(2)}\n`;
+      csvContent += `\nTotal Hours,,,,${(Number(totalHours) || 0).toFixed(2)},${(Number(overtimeHours) || 0).toFixed(2)}\n`;
     
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -123,15 +123,15 @@ export default function EmployeeHours({ entries }: EmployeeHoursProps) {
         {/* Summary Stats */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           <div className="text-center p-4 bg-muted/50 rounded-lg">
-            <div className="text-2xl font-bold">{totalHours.toFixed(1)}h</div>
+            <div className="text-2xl font-bold">{(Number(totalHours) || 0).toFixed(1)}h</div>
             <div className="text-sm text-muted-foreground">Total Hours</div>
           </div>
           <div className="text-center p-4 bg-muted/50 rounded-lg">
-            <div className="text-2xl font-bold text-amber-600">{overtimeHours.toFixed(1)}h</div>
+            <div className="text-2xl font-bold text-amber-600">{(Number(overtimeHours) || 0).toFixed(1)}h</div>
             <div className="text-sm text-muted-foreground">Overtime</div>
           </div>
           <div className="text-center p-4 bg-muted/50 rounded-lg">
-            <div className="text-2xl font-bold">{avgHoursPerDay.toFixed(1)}h</div>
+            <div className="text-2xl font-bold">{(Number(avgHoursPerDay) || 0).toFixed(1)}h</div>
             <div className="text-sm text-muted-foreground">Avg per Day</div>
           </div>
         </div>

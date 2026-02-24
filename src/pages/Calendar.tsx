@@ -372,6 +372,7 @@ const Calendar = () => {
             events={calendarEvents}
             onDateClick={handleDateClick}
             onEditEvent={handleViewShift}
+            isClockedIn={!!activeEntry}
           />
         )}
 
@@ -381,6 +382,7 @@ const Calendar = () => {
             events={calendarEvents}
             onTimeSlotClick={handleTimeSlotClick}
             onEditEvent={handleViewShift}
+            isClockedIn={!!activeEntry}
           />
         )}
 
@@ -390,6 +392,7 @@ const Calendar = () => {
             events={calendarEvents}
             onTimeSlotClick={handleTimeSlotClick}
             onEditEvent={handleViewShift}
+            isClockedIn={!!activeEntry}
           />
         )}
       </div>

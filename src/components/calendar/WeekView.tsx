@@ -27,9 +27,11 @@ interface WeekViewProps {
   onToggleComplete?: (eventId: string, currentStatus: boolean) => void;
   onUserEventClick?: (userId: string) => void;
   getUserName?: (userId: string) => string;
+  /** When true, shifts are not shown as OVERDUE (employee is clocked in). */
+  isClockedIn?: boolean;
 }
 
-export const WeekView = ({ currentDate, events, onTimeSlotClick, onEditEvent, onDeleteEvent, onToggleComplete, onUserEventClick, getUserName }: WeekViewProps) => {
+export const WeekView = ({ currentDate, events, onTimeSlotClick, onEditEvent, onDeleteEvent, onToggleComplete, onUserEventClick, getUserName, isClockedIn }: WeekViewProps) => {
   const weekStart = startOfWeek(currentDate);
   const weekEnd = endOfWeek(currentDate);
   const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
@@ -102,6 +104,7 @@ export const WeekView = ({ currentDate, events, onTimeSlotClick, onEditEvent, on
   };
 
   const isEventOverdue = (event: CalendarEvent) => {
+    if (event.event_type === 'shift' && isClockedIn) return false;
     const now = new Date();
     const eventDate = new Date(event.start_time);
     return eventDate < now && !event.all_day;

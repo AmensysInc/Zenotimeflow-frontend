@@ -264,7 +264,7 @@ export default function SchedulerSchedule() {
     const fetchMyRequests = async () => {
       if (!employeeRecord?.id) return;
       
-      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+      const requests = await apiClient.get<any[]>('/scheduler/replacement-requests/', {
         replacement_employee: employeeRecord.id,
         status: 'pending'
       });
@@ -351,6 +351,8 @@ export default function SchedulerSchedule() {
 
   // Check and mark missed shifts - only for managers, run once on load (not polling)
   // IMPORTANT: Only marks shifts as missed if they were created BEFORE their start_time.
+  // Do NOT mark shifts created in the last 24h so "just published" schedules don't all turn red.
+  const CREATED_RECENTLY_MS = 24 * 60 * 60 * 1000;
   useEffect(() => {
     const checkAndMarkMissedShifts = async () => {
       // Only managers should run this check - employees can't update shifts due to RLS
@@ -360,19 +362,21 @@ export default function SchedulerSchedule() {
         const now = new Date();
         const graceThreshold = new Date(now.getTime() - GRACE_PERIOD_MINUTES * 60 * 1000);
         
-        const overdueShifts = await apiClient.get<any[]>('/scheduler/shifts/', {
+        const rawOverdue = await apiClient.get<any>('/scheduler/shifts/', {
           company: selectedCompany,
           status: 'scheduled',
           is_missed: false,
           start_time__lt: graceThreshold.toISOString()
         });
-        
-        if (!overdueShifts || overdueShifts.length === 0) return;
+        const overdueShifts = ensureArray(rawOverdue);
+        if (overdueShifts.length === 0) return;
         
         for (const shift of overdueShifts) {
           const shiftStartTime = new Date(shift.start_time);
           const shiftCreatedAt = new Date(shift.created_at);
           if (shiftCreatedAt > shiftStartTime) continue;
+          // Skip shifts created in the last 24h so a just-published schedule doesn't turn red
+          if (now.getTime() - shiftCreatedAt.getTime() < CREATED_RECENTLY_MS) continue;
           const assignedEmployeeId = shift.employee_id ?? (typeof shift.employee === 'string' ? shift.employee : shift.employee?.id);
           if (!assignedEmployeeId) continue;
           // Only mark missed if the assigned employee has no clock-in for this shift (not someone else)
@@ -443,6 +447,21 @@ export default function SchedulerSchedule() {
     start.setDate(start.getDate() - start.getDay() + 1); // Start from Monday
     start.setHours(0, 0, 0, 0);
     return start;
+  }
+
+  /** Build date array from start to end (inclusive). Used when loading saved custom range. */
+  function getWeekDatesFromRange(startDate: Date, endDate: Date): Date[] {
+    const dates: Date[] = [];
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(0, 0, 0, 0);
+    const current = new Date(start);
+    while (current <= end) {
+      dates.push(new Date(current));
+      current.setDate(current.getDate() + 1);
+    }
+    return dates;
   }
 
   const getWeekDates = (startDate: Date) => {
@@ -683,10 +702,11 @@ export default function SchedulerSchedule() {
     
     // Build employee sections
     let employeeSections = '';
-    // Build summary table header
+    // Build summary table header (day name from actual date so Wed–Wed 8-day range shows correctly)
+    const getDayName = (date: Date) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
     let summaryHeaders = '<th style="text-align:left">Employee</th>';
-    weekDates.forEach((d, i) => {
-      summaryHeaders += '<th>' + days[i] + '<br>' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'numeric' }) + '</th>';
+    weekDates.forEach((d) => {
+      summaryHeaders += '<th>' + getDayName(d) + '<br>' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'numeric' }) + '</th>';
     });
     summaryHeaders += '<th>Total</th>';
     
@@ -769,10 +789,10 @@ export default function SchedulerSchedule() {
       return deptMatch && shifts.some(s => s.employee_id === e.id);
     });
 
-    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
+    // Day name from actual date so Wed–Wed 8-day range shows correctly (no undefined)
+    const getDayName = (date: Date) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
     let summaryHeaders = '<th>Employee</th>';
-    weekDates.forEach((d, i) => { summaryHeaders += '<th>' + dayNames[i] + '<br>' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'numeric' }) + '</th>'; });
+    weekDates.forEach((d) => { summaryHeaders += '<th>' + getDayName(d) + '<br>' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'numeric' }) + '</th>'; });
     summaryHeaders += '<th>Total</th>';
 
     let summaryRows = '';
@@ -869,37 +889,51 @@ export default function SchedulerSchedule() {
     });
   }, [shifts]);
 
-  // Handler for employee grid drag & drop (Connecteam-style)
+  // Resolve employee id from shift (API may return employee as object)
+  const getShiftEmployeeId = (shift: Shift) =>
+    shift.employee_id ?? (typeof (shift as any).employee === 'string' ? (shift as any).employee : (shift as any).employee?.id) ?? '';
+
+  // Handler for employee grid drag & drop (Connecteam-style): drop = create duplicate shift on that day
   const handleEmployeeGridDrop = (e: React.DragEvent, employeeId: string, dayIndex: number) => {
     e.preventDefault();
     const draggedEmpId = e.dataTransfer.getData('employeeId');
     const shiftId = e.dataTransfer.getData('shiftId');
-    
-    if (shiftId && draggedShift) {
-      // Moving an existing shift to a new day/employee
+    const validEmpId = (id: string) => id && id !== 'undefined' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    if (draggedShift && selectedCompany) {
+      const effectiveEmployeeId = validEmpId(draggedEmpId) ? draggedEmpId : validEmpId(employeeId) ? employeeId : getShiftEmployeeId(draggedShift);
+      if (!validEmpId(effectiveEmployeeId)) {
+        setDraggedEmployee(null);
+        setDraggedShift(null);
+        return;
+      }
+      const employee = employees.find(emp => emp.id === effectiveEmployeeId);
       const date = weekDates[dayIndex];
       const shiftStartDate = new Date(draggedShift.start_time);
       const shiftEndDate = new Date(draggedShift.end_time);
-      
-      // Calculate new times keeping the same hours
+
       const newStart = new Date(date);
       newStart.setHours(shiftStartDate.getHours(), shiftStartDate.getMinutes(), 0, 0);
-      
       const newEnd = new Date(date);
       newEnd.setHours(shiftEndDate.getHours(), shiftEndDate.getMinutes(), 0, 0);
-      
-      // Handle overnight shifts
       if (shiftEndDate.getDate() !== shiftStartDate.getDate()) {
         newEnd.setDate(newEnd.getDate() + 1);
       }
-      
-      updateShift(shiftId, {
-        employee_id: employeeId,
+
+      createShift({
+        employee_id: effectiveEmployeeId,
+        company_id: selectedCompany,
+        department_id: selectedDepartment !== "all" ? selectedDepartment : employee?.department_id || (draggedShift as any).department_id || undefined,
+        team_id: employee?.team_id ?? (draggedShift as any).team_id ?? undefined,
         start_time: newStart.toISOString(),
-        end_time: newEnd.toISOString()
+        end_time: newEnd.toISOString(),
+        break_minutes: draggedShift.break_minutes ?? 30,
+        hourly_rate: employee?.hourly_rate ?? (draggedShift as any).hourly_rate ?? undefined,
+        notes: draggedShift.notes,
+        status: 'scheduled'
       });
     }
-    
+
     setDraggedEmployee(null);
     setDraggedShift(null);
   };
@@ -1009,16 +1043,21 @@ export default function SchedulerSchedule() {
     // Enable showing shifts when loading a template
     setShowScheduleShifts(true);
     
-    const { shiftSlots: savedSlots, shifts: savedShifts, week_start } = template.template_data;
+    const { shiftSlots: savedSlots, shifts: savedShifts, week_start, week_end } = template.template_data;
     
     // Update shift slots if they were saved
     if (savedSlots && savedSlots.length > 0) {
       setShiftSlots(savedSlots);
     }
     
-    // Navigate to the saved week
+    // Navigate to the saved week (and restore custom range if it was saved)
     if (week_start) {
       setSelectedWeek(new Date(week_start));
+    }
+    if (week_end) {
+      setCustomEndDate(new Date(week_end));
+    } else {
+      setCustomEndDate(null);
     }
     
     // Recreate shifts from saved data
@@ -1029,7 +1068,8 @@ export default function SchedulerSchedule() {
       }
       
       // Then create new shifts from template
-      const newWeekDates = getWeekDates(week_start ? new Date(week_start) : selectedWeek);
+      const loadStart = week_start ? new Date(week_start) : selectedWeek;
+      const newWeekDates = week_end ? getWeekDatesFromRange(loadStart, new Date(week_end)) : getWeekDates(loadStart);
       
       for (const savedShift of savedShifts) {
         const date = newWeekDates[savedShift.day_index];
@@ -1070,11 +1110,18 @@ export default function SchedulerSchedule() {
     // Enable showing shifts when editing a template
     setShowScheduleShifts(true);
     
-    const { shiftSlots: savedSlots, week_start } = template.template_data;
+    const { shiftSlots: savedSlots, week_start, week_end } = template.template_data;
     
     // Update shift slots if they were saved
     if (savedSlots && savedSlots.length > 0) {
       setShiftSlots(savedSlots);
+    }
+    
+    // Restore custom date range when the saved schedule had one
+    if (week_end) {
+      setCustomEndDate(new Date(week_end));
+    } else {
+      setCustomEndDate(null);
     }
     
     // Check if the current week already matches the template's week
@@ -1127,26 +1174,12 @@ export default function SchedulerSchedule() {
   const handleScheduleSaved = async () => {
     setSavedSchedulesRefresh(prev => prev + 1);
     setEditingTemplate(null);
-    
-    // IMPORTANT: DO NOT delete shifts after saving!
-    // Shifts must remain in the database so employees can see their scheduled shifts.
-    // The schedule_templates table stores a copy/template for future use,
-    // but the actual shifts table is the source of truth for employee schedules.
-    
-    // Auto-advance to next week - create a completely new week date
-    const currentWeekStart = getWeekStart(selectedWeek);
-    const nextWeekStart = new Date(currentWeekStart.getTime());
-    nextWeekStart.setDate(nextWeekStart.getDate() + 7);
-    nextWeekStart.setHours(12, 0, 0, 0); // Set to noon to avoid timezone edge cases
-    
-    // Force state update with new Date object
-    setSelectedWeek(new Date(nextWeekStart.getTime()));
-    setIsEditMode(false); // Exit edit mode after saving
-    setShowScheduleShifts(false); // Reset to hide shifts for the new week
-    
+    setIsEditMode(false);
+    // Refetch shifts so the grid shows the latest data (no stale or missing shifts)
+    await refetchShifts();
     toast({
       title: "Schedule Saved",
-      description: `Schedule saved! Employees can now view their shifts. Now viewing week of ${nextWeekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.`
+      description: "Schedule saved! Employees can now view their shifts."
     });
   };
 
@@ -1531,7 +1564,8 @@ export default function SchedulerSchedule() {
           onAddShift={handleAddShiftFromGrid}
           onDeleteShift={deleteShift}
           onReassignShift={(shiftId, newEmployeeId) => {
-            updateShift(shiftId, { employee_id: newEmployeeId });
+            const valid = newEmployeeId && newEmployeeId !== 'undefined' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(newEmployeeId);
+            if (valid) updateShift(shiftId, { employee_id: newEmployeeId });
           }}
           onSetAvailability={setEmployeeAvailability}
           checkShiftConflict={checkShiftConflict}
@@ -1594,14 +1628,17 @@ export default function SchedulerSchedule() {
           />
           </div>
 
-          {/* Saved Schedules Section */}
-          {canManageShifts && selectedCompany && (
+          {/* Saved Schedules Section - only when org (super_admin) and company are selected */}
+          {canManageShifts && selectedCompany && (userRole !== 'super_admin' || selectedOrganization) && (
             <div className="mt-6">
               <SavedSchedulesCard
                 companyId={selectedCompany}
+                companyName={schedulableCompanies.find(c => c.id === selectedCompany)?.name}
+                organizationName={userRole === 'super_admin' && selectedOrganization ? organizations.find(o => o.id === selectedOrganization)?.name : undefined}
                 onLoadSchedule={handleLoadSchedule}
                 onEditSchedule={handleEditSavedSchedule}
                 onCopyToCurrentWeek={handleCopyScheduleToCurrentWeek}
+                onScheduleDeleted={refetchShifts}
                 currentWeekLabel={`${weekDates[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${weekDates[weekDates.length - 1].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
                 refreshTrigger={savedSchedulesRefresh}
               />
@@ -1657,7 +1694,8 @@ export default function SchedulerSchedule() {
         companyId={selectedCompany}
         shiftSlots={shiftSlots}
         shifts={prepareShiftsForSave()}
-        weekStart={getWeekStart(selectedWeek)}
+        weekStart={customEndDate ? (() => { const s = new Date(selectedWeek); s.setHours(0, 0, 0, 0); return s; })() : getWeekStart(selectedWeek)}
+        weekEnd={customEndDate ? (() => { const e = new Date(customEndDate); e.setHours(0, 0, 0, 0); return e; })() : undefined}
         existingTemplate={editingTemplate}
         onSaved={handleScheduleSaved}
       />
@@ -1691,7 +1729,7 @@ export default function SchedulerSchedule() {
           onSuccess={async () => {
             // Refresh pending requests via Django API
             try {
-              const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+              const requests = await apiClient.get<any[]>('/scheduler/replacement-requests/', {
                 replacement_employee: employeeRecord.id,
                 status: 'pending'
               });

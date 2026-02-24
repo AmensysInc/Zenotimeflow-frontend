@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Zeno Time Flow",
+    "slug": "zeno-time-flow-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.zenotimeflow.app",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Use Face ID to sign in quickly to Zeno Time Flow"
+      }
+    },
+    "android": {
+      "package": "com.zenotimeflow.app"
+    },
+    "userInterfaceStyle": "automatic",
+    "scheme": "zeno-time-flow",
+    "experiments": {
+      "baseUrl": "/clock"
+    }
+  }
+}

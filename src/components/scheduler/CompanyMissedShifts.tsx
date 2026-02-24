@@ -74,7 +74,7 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
         new Date(b.start_time || 0).getTime() - new Date(a.start_time || 0).getTime()
       ));
 
-      const rawRequests = await apiClient.get<any>('/scheduler/shift-replacement-requests/', {
+      const rawRequests = await apiClient.get<any>('/scheduler/replacement-requests/', {
         replacement_employee: employeeId,
         status: 'pending'
       });
@@ -98,7 +98,7 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
       setRequesting(true);
       
       // Check if already requested
-      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+      const requests = await apiClient.get<any[]>('/scheduler/replacement-requests/', {
         shift: selectedShift.id,
         replacement_employee: employeeId
       });
@@ -111,7 +111,7 @@ export default function CompanyMissedShifts({ companyId, employeeId }: CompanyMi
       }
       
       // Create replacement request
-      await apiClient.post('/scheduler/shift-replacement-requests/', {
+      await apiClient.post('/scheduler/replacement-requests/', {
         shift: selectedShift.id,
         original_employee: selectedShift.employee_id ?? selectedShift.employee,
         replacement_employee: employeeId,

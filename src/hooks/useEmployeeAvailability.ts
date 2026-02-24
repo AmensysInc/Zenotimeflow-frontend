@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import apiClient from '@/lib/api-client';
+import { ensureArray } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -43,10 +44,10 @@ export function useEmployeeAvailability(companyId?: string, weekStart?: Date) {
         params.end_date = weekEnd.toISOString().split('T')[0];
       }
 
-      const data = await apiClient.get<EmployeeAvailability[]>('/scheduler/availability/', params);
+      const data = await apiClient.get<EmployeeAvailability[] | { results?: EmployeeAvailability[] }>('/scheduler/availability/', params);
 
-      // Cast the status field to our type
-      const typedData = (data || []).map(item => ({
+      // Normalize response (array or paginated) and cast status
+      const typedData = ensureArray(data).map(item => ({
         ...item,
         status: item.status as AvailabilityStatus,
         employee_id: item.employee || item.employee_id,

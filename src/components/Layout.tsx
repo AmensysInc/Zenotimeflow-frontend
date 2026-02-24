@@ -2,13 +2,14 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { LogOut, MapPin, Bell } from "lucide-react";
+import { LogOut, MapPin, Bell, Clock } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useShiftNotifications } from "@/hooks/useShiftNotifications";
 import { usePersistentTimeClock } from "@/hooks/usePersistentTimeClock";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
+import { CLOCK_IN_LINK, CLOCK_IN_SAME_ORIGIN } from "@/lib/clock-in-url";
 import { useUserRole } from "@/hooks/useUserRole";
 
 interface LayoutProps {
@@ -77,6 +78,18 @@ const Layout = ({ children }: LayoutProps) => {
               </div>
               
               <div className="flex items-center gap-4">
+                {/* Clock In - opens React Native mobile app (email + PIN login) */}
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="gap-2 bg-primary hover:bg-primary/90"
+                  asChild
+                >
+                  <a href={CLOCK_IN_LINK} className="inline-flex items-center gap-2" {...(!CLOCK_IN_SAME_ORIGIN && { target: "_blank", rel: "noopener noreferrer" })}>
+                    <Clock className="h-4 w-4" />
+                    Clock In
+                  </a>
+                </Button>
                 {/* Show active time clock indicator - only for employee role */}
                 {activeEntry && isEmployee && (
                   <Badge 

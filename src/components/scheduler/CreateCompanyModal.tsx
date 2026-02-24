@@ -22,23 +22,19 @@ interface Profile {
   email: string;
 }
 
-const COMPANY_TYPES = [
-  { value: "motel", label: "Motel" },
-  { value: "gas_station", label: "Gas Station" },
-  { value: "restaurant", label: "Restaurant" },
-  { value: "retail", label: "Retail Store" },
-  { value: "office", label: "Office" },
-  { value: "warehouse", label: "Warehouse" },
-  { value: "other", label: "Other" }
-];
+interface OrganizationOption {
+  id: string;
+  name: string;
+}
 
 export default function CreateCompanyModal({ open, onOpenChange, organizationId, onSuccess }: CreateCompanyModalProps) {
   const { createCompany } = useCompanies();
   const [loading, setLoading] = useState(false);
   const [availableUsers, setAvailableUsers] = useState<Profile[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationOption[]>([]);
   const [formData, setFormData] = useState({
     name: "",
-    type: "motel",
+    type: "other",
     color: "#3b82f6",
     address: "",
     phone: "",
@@ -50,11 +46,23 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
   useEffect(() => {
     if (open) {
       fetchAvailableUsers();
+      fetchOrganizations();
       if (organizationId) {
         setFormData(prev => ({ ...prev, organization_id: organizationId }));
       }
     }
   }, [open, organizationId]);
+
+  const fetchOrganizations = async () => {
+    try {
+      const raw = await apiClient.get<any>('/scheduler/organizations/');
+      const list = Array.isArray(raw) ? raw : (raw?.results ?? []);
+      setOrganizations(list.map((o: any) => ({ id: o.id, name: o.name || o.id })));
+    } catch (error) {
+      console.error('Error fetching organizations:', error);
+      setOrganizations([]);
+    }
+  };
 
   const fetchAvailableUsers = async () => {
     try {
@@ -82,16 +90,23 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!formData.name || !formData.type) {
+    if (!formData.name) {
+      return;
+    }
+    if (!formData.organization_id && organizations.length > 0) {
+      toast.error('Please select an organization');
       return;
     }
 
     setLoading(true);
     try {
-      // Create the company
+      // type: slug from selected org name for backend; fallback "other" if no org
+      const selectedOrg = organizations.find(o => o.id === formData.organization_id);
+      const typeSlug = selectedOrg?.name?.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') || formData.type || 'other';
+
       const companyData = {
         name: formData.name,
-        type: formData.type,
+        type: typeSlug,
         color: formData.color,
         address: formData.address,
         phone: parsePhoneUS(formData.phone) || undefined,
@@ -122,7 +137,7 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
       onSuccess?.();
       setFormData({
         name: "",
-        type: "motel",
+        type: "other",
         color: "#3b82f6",
         address: "",
         phone: "",
@@ -160,20 +175,24 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
 
 
           <div className="space-y-2">
-            <Label htmlFor="type">Business Type *</Label>
+            <Label htmlFor="organization">Organization (Business Type) *</Label>
             <Select
-              value={formData.type}
-              onValueChange={(value) => setFormData(prev => ({ ...prev, type: value }))}
+              value={formData.organization_id || ""}
+              onValueChange={(value) => setFormData(prev => ({ ...prev, organization_id: value, type: value ? "other" : prev.type }))}
             >
               <SelectTrigger>
-                <SelectValue placeholder="Select business type" />
+                <SelectValue placeholder="Select organization" />
               </SelectTrigger>
               <SelectContent>
-                {COMPANY_TYPES.map((type) => (
-                  <SelectItem key={type.value} value={type.value}>
-                    {type.label}
-                  </SelectItem>
-                ))}
+                {organizations.length === 0 ? (
+                  <SelectItem value="_none" disabled>No organizations yet — create one first</SelectItem>
+                ) : (
+                  organizations.map((org) => (
+                    <SelectItem key={org.id} value={org.id}>
+                      {org.name}
+                    </SelectItem>
+                  ))
+                )}
               </SelectContent>
             </Select>
           </div>
@@ -260,7 +279,7 @@ export default function CreateCompanyModal({ open, onOpenChange, organizationId,
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={loading || !formData.name || !formData.type}>
+            <Button type="submit" disabled={loading || !formData.name || (organizations.length > 0 && !formData.organization_id)}>
               {loading ? "Creating..." : "Create Company"}
             </Button>
           </div>

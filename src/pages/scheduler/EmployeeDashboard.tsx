@@ -279,7 +279,7 @@ export default function EmployeeDashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{todayHours.toFixed(1)}h</div>
+            <div className="text-2xl font-bold">{(Number(todayHours) || 0).toFixed(1)}h</div>
             <p className="text-xs text-muted-foreground">{todayEntries.length} entries</p>
           </CardContent>
         </Card>
@@ -292,7 +292,7 @@ export default function EmployeeDashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{weekHours.toFixed(1)}h</div>
+            <div className="text-2xl font-bold">{(Number(weekHours) || 0).toFixed(1)}h</div>
             <p className="text-xs text-muted-foreground">{weekEntries.length} entries</p>
           </CardContent>
         </Card>
@@ -305,7 +305,7 @@ export default function EmployeeDashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{monthHours.toFixed(1)}h</div>
+            <div className="text-2xl font-bold">{(Number(monthHours) || 0).toFixed(1)}h</div>
             <p className="text-xs text-muted-foreground">{monthEntries.length} entries</p>
           </CardContent>
         </Card>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { CLOCK_IN_LINK, CLOCK_IN_SAME_ORIGIN } from "@/lib/clock-in-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,9 +12,11 @@ import { useAuth } from "@/hooks/useAuth";
 
 const Auth = () => {
   const [isLoading, setIsLoading] = useState(false);
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTo = searchParams.get("redirect");
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -25,11 +28,11 @@ const Auth = () => {
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail || !password) {
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername || !password) {
       toast({
         title: "Validation error",
-        description: "Please enter email and password",
+        description: "Please enter username and password",
         variant: "destructive",
       });
       return;
@@ -37,12 +40,12 @@ const Auth = () => {
     setIsLoading(true);
 
     try {
-      await apiClient.login(trimmedEmail, password);
-      // Redirect to dashboard so AppRouter runs RedirectToUserHome and sends user to role-specific dashboard
-      window.location.href = "/dashboard";
+      await apiClient.login(trimmedUsername, password);
+      // Redirect to intended page (e.g. /clock-in) or dashboard
+      window.location.href = redirectTo && redirectTo.startsWith("/") ? redirectTo : "/dashboard";
     } catch (error: unknown) {
       const message =
-        error instanceof Error ? error.message : "Invalid email or password. Please try again.";
+        error instanceof Error ? error.message : "Invalid username or password. Please try again.";
       toast({
         title: "Sign in failed",
         description: message,
@@ -59,6 +62,11 @@ const Auth = () => {
         <img src="/lovable-uploads/dfd7bdde-fe82-4a7a-b7bd-d93fa625c987.png" alt="Zeno TimeFlow Logo" className="h-16 w-auto" />
         <span className="text-2xl font-bold text-foreground">Zeno Time Flow</span>
       </div>
+      <div className="absolute top-4 right-4">
+        <Button asChild variant="outline" size="default">
+          <a href={CLOCK_IN_LINK} {...(!CLOCK_IN_SAME_ORIGIN && { target: "_blank", rel: "noopener noreferrer" })}>Clock In</a>
+        </Button>
+      </div>
       <div className="flex items-center justify-center min-h-screen">
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
@@ -70,13 +78,14 @@ const Auth = () => {
           <CardContent>
             <form onSubmit={handleSignIn} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="username">Username or email</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Enter your email"
+                  id="username"
+                  type="text"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Enter your username or email"
                   required
                 />
               </div>

@@ -44,6 +44,8 @@ interface SaveScheduleModalProps {
   shiftSlots: ShiftSlot[];
   shifts: ShiftData[];
   weekStart: Date;
+  /** When set, this is a custom date range (e.g. Wed–Wed); saved so load shows same range. */
+  weekEnd?: Date | null;
   existingTemplate?: {
     id: string;
     name: string;
@@ -59,6 +61,7 @@ export default function SaveScheduleModal({
   shiftSlots,
   shifts,
   weekStart,
+  weekEnd,
   existingTemplate,
   onSaved
 }: SaveScheduleModalProps) {
@@ -136,11 +139,14 @@ export default function SaveScheduleModal({
 
     setSaving(true);
     try {
-      const templateData = JSON.parse(JSON.stringify({
+      const templateData: Record<string, unknown> = {
         shiftSlots,
         shifts,
         week_start: weekStart.toISOString()
-      }));
+      };
+      if (weekEnd) {
+        templateData.week_end = weekEnd.toISOString();
+      }
 
       // Check for existing schedule with same week_start for this company (to prevent duplicates)
       const weekStartStr = weekStart.toISOString();

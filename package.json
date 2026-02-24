@@ -7,8 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "build:dev": "vite build --mode development",
+    "build:clock": "node scripts/copy-clock-build.mjs",
+    "build:all": "npm run build && cd mobile && npm run build:web && cd .. && npm run build:clock",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "create-superadmin": "node scripts/create-superadmin.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

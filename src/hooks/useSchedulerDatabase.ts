@@ -13,6 +13,19 @@ function ensureArray<T>(data: T | T[] | { results?: T[]; data?: T[] } | null | u
   return [];
 }
 
+/** Normalize shift from API: backend may return employee/company as FK object or UUID. */
+function normalizeShift(raw: any): any {
+  const employeeId = raw?.employee_id ?? (typeof raw?.employee === 'string' ? raw.employee : raw?.employee?.id);
+  const companyId = raw?.company_id ?? (typeof raw?.company === 'string' ? raw.company : raw?.company?.id);
+  const replacementId = raw?.replacement_employee_id ?? (typeof raw?.replacement_employee === 'string' ? raw.replacement_employee : raw?.replacement_employee?.id);
+  return {
+    ...raw,
+    employee_id: employeeId ?? raw?.employee_id,
+    company_id: companyId ?? raw?.company_id,
+    replacement_employee_id: replacementId ?? raw?.replacement_employee_id
+  };
+}
+
 /** Normalize company: organization_id and company_manager_id (Django may return organization/company_manager as FK). */
 function normalizeCompany<T extends { organization_id?: string; organization?: string | { id?: string }; company_manager_id?: string; company_manager?: string }>(c: T): T & { organization_id?: string; company_manager_id?: string } {
   const orgId = c.organization_id ?? (typeof c.organization === 'string' ? c.organization : (c.organization as any)?.id);
@@ -656,7 +669,7 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
       const data = await apiClient.get<Shift[] | { results?: Shift[] }>('/scheduler/shifts/', params);
 
       if (isMountedRef.current) {
-        setShifts(ensureArray(data));
+        setShifts(ensureArray(data).map(normalizeShift));
       }
     } catch (error) {
       console.error('Error fetching shifts:', error);
@@ -697,7 +710,7 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
       
       const data = await apiClient.post<Shift>('/scheduler/shifts/', payload);
       
-      setShifts(prev => [...prev, data]);
+      setShifts(prev => [...prev, normalizeShift(data)]);
       toast.success('Shift created successfully');
       return data;
     } catch (error) {
@@ -710,9 +723,10 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
   const updateShift = async (id: string, updates: Partial<Shift>) => {
     try {
       const payload: any = { ...updates };
-      if (payload.employee_id !== undefined) {
-        payload.employee = payload.employee_id;
-        delete payload.employee_id;
+      const rawEmployeeId = payload.employee_id;
+      delete payload.employee_id;
+      if (rawEmployeeId !== undefined && rawEmployeeId !== null && rawEmployeeId !== '' && String(rawEmployeeId) !== 'undefined') {
+        payload.employee = rawEmployeeId;
       }
       if (payload.company_id !== undefined) {
         payload.company = payload.company_id;
@@ -733,7 +747,7 @@ export function useShifts(companyId?: string, weekStart?: Date, weekEnd?: Date) 
       
       const data = await apiClient.patch<Shift>(`/scheduler/shifts/${id}/`, payload);
       
-      setShifts(prev => prev.map(s => s.id === id ? data : s));
+      setShifts(prev => prev.map(s => s.id === id ? normalizeShift(data) : s));
       toast.success('Shift updated successfully');
       return data;
     } catch (error) {

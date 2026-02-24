@@ -281,7 +281,7 @@ export function useEmployeeTimeClock() {
   // Calculate total hours for a period (coerce to number in case API returns string)
   const calculatePeriodHours = (periodEntries: TimeClockEntry[]) => {
     return periodEntries.reduce((sum, entry) => sum + Number(entry.total_hours || 0), 0);
-  };
+   };
 
   return {
     employee,

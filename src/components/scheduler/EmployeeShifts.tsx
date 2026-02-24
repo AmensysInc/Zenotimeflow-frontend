@@ -96,20 +96,9 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
           clock_in__isnull: false
         });
         const clockEntries = ensureArray(rawClock);
-        
-        // If no clock entry, try to mark as missed
+        // Don't PATCH from employee dashboard — only managers can mark shifts as missed (backend returns 403 for employees).
         if (clockEntries.length === 0) {
-          console.log('Attempting to mark shift as missed:', shift.id, 'start_time:', shift.start_time);
-          try {
-            await apiClient.patch(`/scheduler/shifts/${shift.id}/`, { 
-              is_missed: true, 
-              missed_at: now.toISOString(),
-              status: 'missed'
-            });
-            markedAny = true;
-          } catch (updateError: any) {
-            console.log('Could not update shift in DB:', updateError.message);
-          }
+          markedAny = true; // used only for refetch; UI still shows shift as missed via isShiftEffectivelyMissed
         }
       }
     } catch (error) {
@@ -442,14 +431,14 @@ export default function EmployeeShifts({ employeeId, showTeamScheduleTab = true 
                                   </span>
                                 </div>
                                 <div>
-                                  <p className="font-medium flex items-center gap-2">
+                                  <div className="font-medium flex items-center gap-2">
                                     {firstName} {lastName}
                                     {isOwnShift && (
                                       <Badge variant="secondary" className="bg-green-100 text-green-700 text-xs">
                                         (You)
                                       </Badge>
                                     )}
-                                  </p>
+                                  </div>
                                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                                     <Clock className="h-3 w-3" />
                                     {format(parseISO(shift.start_time), 'h:mm a')} - {format(parseISO(shift.end_time), 'h:mm a')}

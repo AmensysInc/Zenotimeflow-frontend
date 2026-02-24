@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/clock", "destination": "/clock/index.html" },
+    { "source": "/clock/", "destination": "/clock/index.html" },
+    { "source": "/clock/:path*", "destination": "/clock/index.html" }
+  ]
+}

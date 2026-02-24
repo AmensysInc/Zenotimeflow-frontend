@@ -1,0 +1,10 @@
+# Clock In app (Expo web) at /clock - SPA fallback
+[[redirects]]
+  from = "/clock"
+  to = "/clock/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/clock/*"
+  to = "/clock/index.html"
+  status = 200

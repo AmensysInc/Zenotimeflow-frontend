@@ -63,6 +63,9 @@ interface ConnecteamScheduleGridProps {
 
 const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+/** Sentinel for unassigned shift (Radix Select forbids empty string value). */
+const UNASSIGNED_SELECT_VALUE = '__unassigned__';
+
 const presetShifts = [
   { label: 'Morning (6AM-2PM)', startHour: 6, endHour: 14 },
   { label: 'Afternoon (2PM-10PM)', startHour: 14, endHour: 22 },
@@ -402,14 +405,18 @@ export default function ConnecteamScheduleGrid({
                   {/* Shift Cards */}
                   <div className="flex-1 p-2 space-y-2">
                     {dayShifts.map((shift) => {
-                      const employeeName = getEmployeeName(shift.employee_id);
-                      const employee = employees.find(e => e.id === shift.employee_id);
+                      const shiftEmployeeId = shift.employee_id ?? (typeof (shift as any).employee === 'string' ? (shift as any).employee : (shift as any).employee?.id);
+                      const employeeName = getEmployeeName(shiftEmployeeId || '');
+                      const employee = employees.find(e => e.id === shiftEmployeeId);
 
                       return (
                         <div
                           key={shift.id}
                           draggable={canManageShifts && isEditMode}
-                          onDragStart={(e) => isEditMode && onDragStart(e, shift.employee_id, shift)}
+                          onDragStart={(e) => {
+                              const empId = shift.employee_id ?? (typeof (shift as any).employee === 'string' ? (shift as any).employee : (shift as any).employee?.id) ?? '';
+                              if (isEditMode) onDragStart(e, empId, shift);
+                            }}
                           onDragEnd={onDragEnd}
                           onClick={() => canManageShifts && isEditMode && onShiftClick(shift)}
                           className={cn(
@@ -438,9 +445,10 @@ export default function ConnecteamScheduleGrid({
                             </Avatar>
                             {canManageShifts && isEditMode && onReassignShift ? (
                               <Select
-                                value={shift.employee_id}
+                                value={shiftEmployeeId || UNASSIGNED_SELECT_VALUE}
                                 onValueChange={(newEmpId) => {
-                                  if (newEmpId !== shift.employee_id) {
+                                  if (newEmpId === UNASSIGNED_SELECT_VALUE) return;
+                                  if (newEmpId !== shiftEmployeeId) {
                                     onReassignShift(shift.id, newEmpId);
                                   }
                                 }}
@@ -452,7 +460,8 @@ export default function ConnecteamScheduleGrid({
                                   <SelectValue>{employeeName}</SelectValue>
                                 </SelectTrigger>
                                 <SelectContent className="bg-popover border shadow-lg z-50">
-                                  {employees.map((emp) => (
+                                  <SelectItem value={UNASSIGNED_SELECT_VALUE}>Unassigned</SelectItem>
+                                  {employees.filter((emp) => emp.id).map((emp) => (
                                     <SelectItem key={emp.id} value={emp.id}>
                                       {emp.first_name} {emp.last_name}
                                     </SelectItem>
@@ -484,9 +493,7 @@ export default function ConnecteamScheduleGrid({
                               className="absolute top-1.5 right-1.5 h-6 w-6 opacity-0 group-hover/shift:opacity-100 bg-black/20 hover:bg-destructive/20 hover:bg-opacity-100"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (window.confirm('Delete this shift? This cannot be undone.')) {
-                                  onDeleteShift(shift.id);
-                                }
+                                onDeleteShift(shift.id);
                               }}
                               title="Delete shift"
                             >

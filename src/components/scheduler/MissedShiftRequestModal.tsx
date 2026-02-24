@@ -47,7 +47,7 @@ export default function MissedShiftRequestModal({
       setRequesting(true);
 
       // Check if already requested
-      const requests = await apiClient.get<any[]>('/scheduler/shift-replacement-requests/', {
+      const requests = await apiClient.get<any[]>('/scheduler/replacement-requests/', {
         shift: shift.id,
         replacement_employee: employeeId
       });
@@ -60,7 +60,7 @@ export default function MissedShiftRequestModal({
       }
 
       // Create replacement request
-      await apiClient.post('/scheduler/shift-replacement-requests/', {
+      await apiClient.post('/scheduler/replacement-requests/', {
         shift: shift.id,
         original_employee: shift.employee_id,
         replacement_employee: employeeId,

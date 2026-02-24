@@ -1,10 +1,13 @@
 /**
  * Django API Client – Zeno-time-flow
  * Handles auth (login/logout/getCurrentUser), token storage, and authenticated requests.
- * Base URL: VITE_API_URL or http://localhost:8000/api
+ * When served from 8080 we use same-origin /api so the dev proxy forwards to the backend (no CORS, single origin).
  */
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+function getApiUrl(): string {
+  if (typeof window !== "undefined" && window.location?.port === "8080") return "/api";
+  return import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+}
+const API_URL = getApiUrl();
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, any>;
@@ -149,14 +152,41 @@ class ApiClient {
     return this.request<T>(endpoint, { method: 'DELETE' });
   }
 
-  /** Login: expects backend { access, refresh, user } or { access_token, refresh_token, user }. */
-  async login(email: string, password: string) {
-    const response = await this.post<any>("/auth/login/", { email, password });
+  /** Login: username or email + password. Send same value as "username"; backend must look up user by username OR email. */
+  async login(usernameOrEmail: string, password: string) {
+    const trimmed = usernameOrEmail.trim();
+    const response = await this.post<any>("/auth/login/", {
+      username: trimmed,
+      password,
+    });
     const access = getAccessToken(response);
     const refresh = getRefreshToken(response);
     if (!access) {
       throw new Error("Invalid login response: no access token");
     }
+    this.setToken(access);
+    if (typeof window !== "undefined" && refresh) {
+      localStorage.setItem("refresh_token", refresh);
+    }
+    return response;
+  }
+
+  /** Employee clock-in login: username or email + PIN. Backend must resolve by username OR email. */
+  async employeeLogin(usernameOrEmail: string, pin: string) {
+    const trimmed = usernameOrEmail.trim();
+    let response: any;
+    try {
+      response = await this.post<any>("/auth/employee-login/", { username: trimmed, pin });
+    } catch (e: any) {
+      if (e?.message?.includes("404") || e?.message?.toLowerCase()?.includes("not found")) {
+        response = await this.post<any>("/auth/login/", { username: trimmed, password: pin });
+      } else {
+        throw e;
+      }
+    }
+    const access = getAccessToken(response);
+    const refresh = getRefreshToken(response);
+    if (!access) throw new Error("Invalid login response: no access token");
     this.setToken(access);
     if (typeof window !== "undefined" && refresh) {
       localStorage.setItem("refresh_token", refresh);

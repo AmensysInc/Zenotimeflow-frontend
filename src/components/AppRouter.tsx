@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import RoleProtectedRoute from "@/components/RoleProtectedRoute";
@@ -29,11 +29,15 @@ import EmployeeSchedule from "@/pages/scheduler/EmployeeSchedule";
 import MissedShifts from "@/pages/scheduler/MissedShifts";
 
 import NotFound from "@/pages/NotFound";
+import ClockIn from "@/pages/ClockIn";
 import { RedirectToUserHome } from "@/components/RedirectToUserHome";
+import { ClockInRedirect } from "@/components/ClockInRedirect";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const AppRouter = () => {
   const { user, isLoading: authLoading } = useAuth();
+  const location = useLocation();
+  const isClockPath = location.pathname === "/clock" || location.pathname.startsWith("/clock/");
 
   if (authLoading) {
     return (
@@ -44,7 +48,9 @@ const AppRouter = () => {
   }
 
   if (!user) {
-    return <Navigate to="/auth" replace />;
+    if (isClockPath) return <ClockIn />;
+    const redirect = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={redirect ? `/auth?redirect=${redirect}` : "/auth"} replace />;
   }
 
   return (
@@ -58,6 +64,7 @@ const AppRouter = () => {
                 {/* Entry: redirect to role dashboard */}
                 <Route path="/" element={<RedirectToUserHome />} />
                 <Route path="/dashboard" element={<RedirectToUserHome />} />
+                <Route path="/clock-in" element={<ClockInRedirect />} />
 
                 {/* Role-based dashboard routes */}
                 <Route

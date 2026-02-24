@@ -37,6 +37,7 @@ import { Loader2, Users, Plus, Edit, Trash2, Search, Filter, Mail, Building, Bui
 interface UserProfile {
   id: string;
   user_id: string;
+  username?: string;
   full_name: string;
   email: string;
   created_at: string;
@@ -47,6 +48,7 @@ interface UserProfile {
   field_type?: 'IT' | 'Non-IT';
   organization_id?: string;
   company_id?: string;
+  employee_pin?: string;
 }
 
 export default function UserManagement() {
@@ -58,6 +60,7 @@ export default function UserManagement() {
   const [isCreating, setIsCreating] = useState(false);
   const [newUser, setNewUser] = useState({
     email: "",
+    username: "",
     full_name: "",
     password: "",
     employee_pin: "",
@@ -92,13 +95,13 @@ export default function UserManagement() {
     }
   }, [isAssignCompanyDialogOpen, users, companies]);
 
-  // When Add User dialog opens, ensure Super Admin has fresh org/company data for dropdowns
+  // When Add User or Edit User dialog opens, load org/company so dropdowns work
   useEffect(() => {
-    if (isDialogOpen && isAuthorized) {
+    if ((isDialogOpen || isEditDialogOpen) && isAuthorized) {
       loadOrganizations();
       loadCompanies();
     }
-  }, [isDialogOpen, isAuthorized]);
+  }, [isDialogOpen, isEditDialogOpen, isAuthorized]);
 
   const loadAvailableUsers = async () => {
     try {
@@ -248,6 +251,7 @@ export default function UserManagement() {
           return {
             id: profile.id || u.id,
             user_id: u.id,
+            username: u.username ?? profile.username ?? '',
             email: u.email || profile.email || '',
             full_name: profile.full_name || u.full_name || '',
             created_at: profile.created_at || u.created_at || new Date().toISOString(),
@@ -417,26 +421,32 @@ export default function UserManagement() {
     }
   };
 
-  const loadCompanies = async () => {
+  const loadCompanies = async (): Promise<any[]> => {
     try {
       const raw = await apiClient.get<any>('/scheduler/companies/');
       const list = ensureArray(raw).map((c: any) => ({
         ...c,
         organization_id: c.organization_id ?? (typeof c.organization === 'string' ? c.organization : c.organization?.id)
       }));
-      setCompanies(list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
+      const sorted = list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+      setCompanies(sorted);
+      return sorted;
     } catch (error) {
       console.error('Error loading companies:', error);
+      return [];
     }
   };
 
-  const loadOrganizations = async () => {
+  const loadOrganizations = async (): Promise<any[]> => {
     try {
       const raw = await apiClient.get<any>('/scheduler/organizations/');
       const list = ensureArray(raw);
-      setOrganizations(list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')));
+      const sorted = list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+      setOrganizations(sorted);
+      return sorted;
     } catch (error) {
       console.error('Error loading organizations:', error);
+      return [];
     }
   };
 
@@ -487,7 +497,9 @@ export default function UserManagement() {
   /** Dynamic validation: require org/company based on selected role. */
   const getCreateUserValidationError = (): string | null => {
     const email = newUser.email?.trim();
+    const username = newUser.username?.trim();
     const password = newUser.password;
+    if (!username) return "Username is required.";
     if (!email) return "Email is required.";
     if (!password) return "Password is required.";
     if (password.length < 8) return "Password must be at least 8 characters.";
@@ -529,12 +541,18 @@ export default function UserManagement() {
         return;
       }
 
-      // Check if user already exists (by email) – support paginated or list response
+      // Check if user already exists (by email or username) – support paginated or list response
       let existingProfile: any = null;
       try {
-        const rawUsers = await apiClient.get<any>("/auth/users/", { email: newUser.email.trim() });
+        const rawUsers = await apiClient.get<any>("/auth/users/", {});
         const list = ensureArray(rawUsers);
-        existingProfile = list.find((u: any) => (u.email || u.profile?.email || "").toLowerCase() === newUser.email.trim().toLowerCase()) || null;
+        const emailLower = newUser.email.trim().toLowerCase();
+        const usernameLower = newUser.username.trim().toLowerCase();
+        existingProfile = list.find((u: any) => {
+          const uEmail = (u.email || u.profile?.email || "").toLowerCase();
+          const uUsername = (u.username || "").toLowerCase();
+          return uEmail === emailLower || uUsername === usernameLower;
+        }) || null;
       } catch {
         // Ignore pre-check errors; backend will reject duplicate on register
       }
@@ -561,17 +579,34 @@ export default function UserManagement() {
           return;
         }
       } else {
-        // Payload for backend /auth/register/: match serializer (email, password, full_name; optional password_confirm, role, app_type)
-        const registerPayload: Record<string, any> = {
-          email: newUser.email.trim(),
-          password: newUser.password,
-          password_confirm: newUser.password,
-          full_name: newUser.full_name?.trim() || newUser.email.trim().split("@")[0],
-          role: newUser.role,
-          app_type: "scheduler",
-        };
+        // Use POST /auth/users/ so backend saves user + role + org/company + employee (with company & PIN) in one go
+        const fullName = newUser.full_name?.trim() || newUser.email.trim().split("@")[0];
+        const backendRole =
+          newUser.role === "operations_manager"
+            ? "organization_manager"
+            : newUser.role === "manager"
+              ? "company_manager"
+              : "employee"; // employee, house_keeping, maintenance all create an employee record
 
-        const data = await apiClient.post<any>("/auth/register/", registerPayload);
+        const usersPayload: Record<string, any> = {
+          email: newUser.email.trim(),
+          username: newUser.username.trim(),
+          password: newUser.password,
+          full_name: fullName,
+          role: backendRole,
+        };
+        if (newUser.role === "operations_manager" && newUser.organization_id) {
+          usersPayload.organization_id = newUser.organization_id;
+        }
+        if ((newUser.role === "manager" || newUser.role === "employee" || newUser.role === "house_keeping" || newUser.role === "maintenance") && newUser.company_id) {
+          usersPayload.company_id = newUser.company_id;
+          if (newUser.role === "manager" && newUser.organization_id) usersPayload.organization_id = newUser.organization_id;
+        }
+        if (newUser.role === "employee" || newUser.role === "house_keeping" || newUser.role === "maintenance") {
+          usersPayload.employee_pin = newUser.employee_pin?.trim() || null;
+        }
+
+        const data = await apiClient.post<any>("/auth/users/", usersPayload);
         const userId = data?.id ?? data?.user?.id;
         if (!userId) {
           toast({ title: "Error", description: "Invalid response: no user id returned.", variant: "destructive" });
@@ -579,89 +614,43 @@ export default function UserManagement() {
           return;
         }
 
-        // Assign role via user-roles if not already set by register
-        try {
-          await apiClient.post("/auth/user-roles/", {
-            user: userId,
-            role: newUser.role,
-            app_type: "scheduler",
-          });
-        } catch (roleErr: any) {
-          // If role already exists or backend already set it, continue
-          console.warn("User role assignment:", roleErr?.message);
-        }
-
-        // Role-based org/company assignment
-        if (newUser.role === "operations_manager" && newUser.organization_id) {
+        if (newUser.role === "operations_manager") successMessage = "User created and assigned as Organization Manager.";
+        else if (newUser.role === "manager") successMessage = "User created and assigned as Company Manager.";
+        else if (newUser.role === "employee") successMessage = "User created and added to company.";
+        else if (newUser.role === "house_keeping" || newUser.role === "maintenance") {
           try {
-            await apiClient.patch(`/scheduler/organizations/${newUser.organization_id}/`, {
-              organization_manager_id: userId,
-            });
-            successMessage = "User created and assigned as Organization Manager.";
-          } catch (orgErr: any) {
-            console.error("Assign org manager:", orgErr);
-            successMessage = "User created. Assign to organization manually if needed.";
+            await apiClient.post("/auth/user-roles/", { user: userId, role: newUser.role, app_type: "scheduler" });
+          } catch {
+            // Role may already exist
           }
-        } else if (newUser.role === "manager" && newUser.company_id) {
-          try {
-            await apiClient.patch(`/scheduler/companies/${newUser.company_id}/`, {
-              company_manager_id: userId,
-            });
-            successMessage = "User created and assigned as Company Manager.";
-          } catch (companyErr: any) {
-            console.error("Assign company manager:", companyErr);
-            successMessage = "User created. Assign to company manually if needed.";
-          }
-        } else if (
-          (newUser.role === "employee" || newUser.role === "house_keeping" || newUser.role === "maintenance") &&
-          newUser.company_id
-        ) {
-          const nameParts = (newUser.full_name || "").trim().split(" ");
-          const firstName = nameParts[0] || "";
-          const lastName = nameParts.slice(1).join(" ") || "";
           let teamId: string | null = null;
-          if (newUser.role === "house_keeping" || newUser.role === "maintenance") {
-            const teamName = newUser.role === "house_keeping" ? "House Keeping" : "Maintenance";
-            try {
-              const teams = await apiClient.get<any[]>("/scheduler/schedule-teams/", {
+          const teamName = newUser.role === "house_keeping" ? "House Keeping" : "Maintenance";
+          try {
+            const teams = await apiClient.get<any[]>("/scheduler/teams/", { company: newUser.company_id, name: teamName });
+            if (teams?.length) teamId = teams[0].id;
+            else {
+              const newTeam = await apiClient.post<any>("/scheduler/teams/", {
                 company: newUser.company_id,
                 name: teamName,
+                color: newUser.role === "house_keeping" ? "#3B82F6" : "#EF4444",
               });
-              if (teams?.length) teamId = teams[0].id;
-              else {
-                const newTeam = await apiClient.post<any>("/scheduler/schedule-teams/", {
-                  company: newUser.company_id,
-                  name: teamName,
-                  color: newUser.role === "house_keeping" ? "#3B82F6" : "#EF4444",
-                });
-                if (newTeam?.id) teamId = newTeam.id;
-              }
-            } catch {
-              /* ignore */
+              if (newTeam?.id) teamId = newTeam.id;
             }
+            if (teamId) {
+              const employees = await apiClient.get<any[]>("/scheduler/employees/", { user: userId });
+              const emp = Array.isArray(employees) ? employees[0] : null;
+              if (emp) await apiClient.patch(`/scheduler/employees/${emp.id}/`, { team: teamId });
+            }
+          } catch {
+            /* ignore */
           }
-          try {
-            await apiClient.post("/scheduler/employees/", {
-              user: userId,
-              email: newUser.email.trim(),
-              first_name: firstName,
-              last_name: lastName,
-              company: newUser.company_id,
-              team: teamId,
-              status: "active",
-              hire_date: new Date().toISOString().split("T")[0],
-              employee_pin: newUser.employee_pin || null,
-            });
-            successMessage = "User created and added to company.";
-          } catch (empErr: any) {
-            console.error("Create employee record:", empErr);
-            successMessage = "User created. Add to company manually if needed.";
-          }
+          successMessage = "User created and added to company.";
         }
       }
 
       setNewUser({
         email: "",
+        username: "",
         full_name: "",
         role: "employee",
         password: "",
@@ -695,6 +684,17 @@ export default function UserManagement() {
     if (!editingUser) return;
 
     try {
+      // Update user username if supported (User model)
+      const usernameVal = (editingUser.username ?? '').trim();
+      if (usernameVal) {
+        try {
+          await apiClient.patch(`/auth/users/${editingUser.user_id}/`, { username: usernameVal });
+        } catch (userPatchErr: any) {
+          if (userPatchErr?.message && !userPatchErr.message.includes('404')) {
+            console.warn('Could not update username:', userPatchErr);
+          }
+        }
+      }
       // Update profile
       await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, { 
         full_name: editingUser.full_name,
@@ -708,15 +708,15 @@ export default function UserManagement() {
       // For Organization Manager - update organization assignment
       if (editingUser.role === 'operations_manager' && editingUser.organization_id) {
         // First, remove from any previously assigned organization
-        const orgs = await apiClient.get<any[]>('/scheduler/organizations/', { organization_manager_id: editingUser.user_id });
+        const orgs = await apiClient.get<any[]>('/scheduler/organizations/', { organization_manager: editingUser.user_id });
         await Promise.all(orgs.map((org: any) => 
-          apiClient.patch(`/scheduler/organizations/${org.id}/`, { organization_manager_id: null })
+          apiClient.patch(`/scheduler/organizations/${org.id}/`, { organization_manager: null })
         ));
         
         // Then assign to new organization
         try {
           await apiClient.patch(`/scheduler/organizations/${editingUser.organization_id}/`, { 
-            organization_manager_id: editingUser.user_id 
+            organization_manager: editingUser.user_id 
           });
         } catch (orgError: any) {
           console.error('Error assigning organization manager:', orgError);
@@ -726,15 +726,15 @@ export default function UserManagement() {
       // For Company Manager - update company assignment
       if (editingUser.role === 'manager' && editingUser.company_id) {
         // First, remove from any previously assigned company
-        const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager_id: editingUser.user_id });
+        const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager: editingUser.user_id });
         await Promise.all(companies.map((comp: any) => 
-          apiClient.patch(`/scheduler/companies/${comp.id}/`, { company_manager_id: null })
+          apiClient.patch(`/scheduler/companies/${comp.id}/`, { company_manager: null })
         ));
         
         // Then assign to new company
         try {
           await apiClient.patch(`/scheduler/companies/${editingUser.company_id}/`, { 
-            company_manager_id: editingUser.user_id 
+            company_manager: editingUser.user_id 
           });
         } catch (companyError: any) {
           console.error('Error assigning company manager:', companyError);
@@ -748,7 +748,7 @@ export default function UserManagement() {
         if (editingUser.role === 'house_keeping' || editingUser.role === 'maintenance') {
           const teamName = editingUser.role === 'house_keeping' ? 'House Keeping' : 'Maintenance';
           try {
-            const teams = await apiClient.get<any[]>('/scheduler/schedule-teams/', { 
+            const teams = await apiClient.get<any[]>('/scheduler/teams/', { 
               company: editingUser.company_id,
               name: teamName 
             });
@@ -757,7 +757,7 @@ export default function UserManagement() {
               teamId = teams[0].id;
             } else {
               // Create the team if it doesn't exist
-              const newTeam = await apiClient.post<{ id: string }>('/scheduler/schedule-teams/', {
+              const newTeam = await apiClient.post<{ id: string }>('/scheduler/teams/', {
                 company: editingUser.company_id,
                 name: teamName,
                 color: editingUser.role === 'house_keeping' ? '#3B82F6' : '#EF4444'
@@ -791,17 +791,17 @@ export default function UserManagement() {
         }
 
         if (existingEmployee) {
-          // Update existing employee record with team assignment
           try {
+            const pinValue = (editingUser.employee_pin as string)?.trim() || null;
             await apiClient.patch(`/scheduler/employees/${existingEmployee.id}/`, { 
-              company: editingUser.company_id,
-              team: teamId
+              company: editingUser.company_id || null,
+              team: teamId,
+              employee_pin: pinValue,
             });
           } catch (updateError: any) {
-            console.error('Error updating employee company:', updateError);
+            console.error('Error updating employee:', updateError);
           }
         } else {
-          // Create new employee record
           const nameParts = editingUser.full_name.trim().split(' ');
           const firstName = nameParts[0] || '';
           const lastName = nameParts.slice(1).join(' ') || '';
@@ -815,7 +815,8 @@ export default function UserManagement() {
               company: editingUser.company_id,
               team: teamId,
               status: 'active',
-              hire_date: new Date().toISOString().split('T')[0]
+              hire_date: new Date().toISOString().split('T')[0],
+              employee_pin: (editingUser.employee_pin as string)?.trim() || null,
             });
           } catch (insertError: any) {
             console.error('Error creating employee record:', insertError);
@@ -853,12 +854,12 @@ export default function UserManagement() {
       try {
         const orgs = await apiClient.get<any[]>('/scheduler/organizations/');
         const orgsToUpdate = orgs.filter((org: any) => 
-          org.operations_manager_id === userId || org.organization_manager_id === userId
+          org.operations_manager === userId || org.organization_manager === userId
         );
         await Promise.all(orgsToUpdate.map((org: any) => 
           apiClient.patch(`/scheduler/organizations/${org.id}/`, { 
-            operations_manager_id: null,
-            organization_manager_id: null 
+            operations_manager: null,
+            organization_manager: null 
           })
         ));
       } catch (orgCleanupError: any) {
@@ -869,12 +870,12 @@ export default function UserManagement() {
       try {
         const companies = await apiClient.get<any[]>('/scheduler/companies/');
         const companiesToUpdate = companies.filter((comp: any) => 
-          comp.operations_manager_id === userId || comp.company_manager_id === userId
+          comp.operations_manager === userId || comp.company_manager === userId
         );
         await Promise.all(companiesToUpdate.map((comp: any) => 
           apiClient.patch(`/scheduler/companies/${comp.id}/`, { 
-            operations_manager_id: null,
-            company_manager_id: null 
+            operations_manager: null,
+            company_manager: null 
           })
         ));
       } catch (companyCleanupError: any) {
@@ -1341,6 +1342,19 @@ export default function UserManagement() {
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="username" className="text-right">
+                      Username
+                    </Label>
+                    <Input
+                      id="username"
+                      type="text"
+                      value={newUser.username}
+                      onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                      className="col-span-3"
+                      placeholder="Login username"
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="email" className="text-right">
                       Email
                     </Label>
@@ -1759,47 +1773,53 @@ export default function UserManagement() {
                         variant="outline"
                         size="sm"
                         onClick={async () => {
-                          // Load current org/company based on role
+                          // Load org/company lists first so we have fresh data for dropdowns and lookups
+                          const [orgs, comps] = await Promise.all([loadOrganizations(), loadCompanies()]);
                           let orgId: string | undefined;
                           let companyId: string | undefined;
                           
                           if (userProfile.role === 'operations_manager') {
-                            // Find organization where this user is the manager
-                            const org = organizations.find(o => o.organization_manager_id === userProfile.user_id);
+                            const org = orgs.find((o: any) => o.organization_manager === userProfile.user_id);
                             orgId = org?.id;
+                            setEditingUser({ ...userProfile, organization_id: orgId, company_id: companyId });
                           } else if (userProfile.role === 'manager') {
-                            // Find company where this user is the manager
-                            const company = companies.find(c => c.company_manager_id === userProfile.user_id);
+                            const company = comps.find((c: any) => c.company_manager === userProfile.user_id);
                             if (company) {
                               companyId = company.id;
-                              orgId = company.organization_id;
+                              orgId = company.organization_id ?? company.organization;
                             }
-                          } else if (userProfile.role === 'employee') {
-                            let employee;
+                            setEditingUser({ ...userProfile, organization_id: orgId, company_id: companyId });
+                          } else if (userProfile.role === 'employee' || userProfile.role === 'house_keeping' || userProfile.role === 'maintenance') {
+                            let employee: any = null;
                             try {
                               const employees = await apiClient.get<any[]>('/scheduler/employees/', { 
                                 user: userProfile.user_id 
                               });
-                              employee = employees && employees.length > 0 ? employees[0] : null;
-                              
+                              employee = Array.isArray(employees) && employees.length > 0 ? employees[0] : null;
                               if (!employee) {
-                                const employeesByEmail = await apiClient.get<any[]>('/scheduler/employees/', { 
+                                const byEmail = await apiClient.get<any[]>('/scheduler/employees/', { 
                                   email: userProfile.email 
                                 });
-                                employee = employeesByEmail && employeesByEmail.length > 0 ? employeesByEmail[0] : null;
+                                employee = Array.isArray(byEmail) && byEmail.length > 0 ? byEmail[0] : null;
                               }
                             } catch (error) {
                               employee = null;
                             }
-                            
-                            if (employee?.company_id) {
-                              companyId = employee.company_id;
-                              const company = companies.find(c => c.id === companyId);
-                              orgId = company?.organization_id;
+                            companyId = employee?.company_id ?? employee?.company ?? undefined;
+                            if (companyId) {
+                              const company = comps.find((c: any) => c.id === companyId);
+                              orgId = company?.organization_id ?? company?.organization ?? undefined;
                             }
+                            const pin = employee?.employee_pin != null && employee?.employee_pin !== '' ? String(employee.employee_pin) : '';
+                            setEditingUser({
+                              ...userProfile,
+                              organization_id: orgId,
+                              company_id: companyId,
+                              employee_pin: pin,
+                            });
+                          } else {
+                            setEditingUser({ ...userProfile, organization_id: orgId, company_id: companyId });
                           }
-                          
-                          setEditingUser({ ...userProfile, organization_id: orgId, company_id: companyId });
                           setIsEditDialogOpen(true);
                         }}
                         className="h-8 w-8 p-0"
@@ -1844,6 +1864,20 @@ export default function UserManagement() {
           </DialogHeader>
           {editingUser && (
             <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="edit_username" className="text-right">
+                  Username
+                </Label>
+                <Input
+                  id="edit_username"
+                  type="text"
+                  autoComplete="username"
+                  value={editingUser.username ?? ''}
+                  onChange={(e) => setEditingUser({ ...editingUser, username: e.target.value })}
+                  className="col-span-3"
+                  placeholder="Login username"
+                />
+              </div>
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="edit_email" className="text-right">
                   Email
@@ -2007,6 +2041,21 @@ export default function UserManagement() {
                           ))}
                       </SelectContent>
                     </Select>
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="edit_employee_pin" className="text-right">
+                      Employee PIN
+                    </Label>
+                    <Input
+                      id="edit_employee_pin"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="4-digit PIN"
+                      maxLength={10}
+                      value={editingUser.employee_pin ?? ""}
+                      onChange={(e) => setEditingUser({ ...editingUser, employee_pin: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                      className="col-span-3"
+                    />
                   </div>
                 </>
               )}

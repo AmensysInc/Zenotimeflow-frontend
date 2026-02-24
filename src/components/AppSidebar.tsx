@@ -32,10 +32,10 @@ import {
 
 /**
  * Role Hierarchy:
- * 1. Super Admin - Full access to entire application
- * 2. Organization Manager (operations_manager) - Access to assigned organization
- * 3. Company Manager (manager) - Access to assigned company
- * 4. Employee - Access to own profile and tasks only
+ * 1. Super Admin - Full access; can assign tasks and check lists to anyone.
+ * 2. Organization Manager (operations_manager) - Can assign to company managers and employees in their org.
+ * 3. Company Manager (manager) - Can assign to employees in their company(ies).
+ * 4. Employee - Can create own tasks, focus hours, daily routines; cannot create check lists (only receive them).
  */
 type UserRole = 'user' | 'admin' | 'super_admin' | 'operations_manager' | 'manager' | 'employee' | 'house_keeping' | 'maintenance';
 

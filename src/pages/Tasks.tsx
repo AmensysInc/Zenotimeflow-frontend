@@ -240,9 +240,13 @@ const Tasks = () => {
     }
     
     try {
-      const eventsData = await apiClient.get<CalendarEvent[]>('/calendar/events/', params);
+      const raw = await apiClient.get<CalendarEvent[] | { results?: CalendarEvent[] }>('/calendar/events/', params);
+      const eventsWithProfiles: CalendarEvent[] = Array.isArray(raw)
+        ? raw
+        : Array.isArray((raw as any)?.results)
+          ? (raw as any).results
+          : [];
 
-      const eventsWithProfiles = eventsData || [];
       const primaryTasks = eventsWithProfiles.filter(event => !event.parent_task_id);
       const subTasks = eventsWithProfiles.filter(event => event.parent_task_id);
       const tasksWithSubTasks = primaryTasks.map(task => ({
@@ -292,22 +296,42 @@ const Tasks = () => {
       if (userRole === 'operations_manager') {
         const companies = await apiClient.get<any[]>('/scheduler/companies/', { operations_manager: user?.id });
         const companiesList = Array.isArray(companies) ? companies : [];
+        const companyIds = companiesList.map(c => c?.id).filter(Boolean);
         const managerIds = companiesList.map(c => c?.company_manager || c?.company_manager_id).filter(Boolean);
-        
+        const seen = new Set<string>();
+        const teamMembersData: { user_id: string; full_name: string | null; email: string }[] = [];
         if (managerIds.length > 0) {
           const usersRaw = await apiClient.get<any[]>('/auth/users/');
           const usersList = Array.isArray(usersRaw) ? usersRaw : [];
-          const teamMembersData = usersList
-            .filter((u: any) => managerIds.includes(u?.id))
-            .map((u: any) => ({
-              user_id: u.id,
-              full_name: u?.profile?.full_name || u?.full_name || null,
-              email: u?.email
-            }));
-          setTeamMembers(teamMembersData);
-        } else {
-          setTeamMembers([]);
+          usersList.filter((u: any) => managerIds.includes(u?.id)).forEach((u: any) => {
+            if (u?.id && !seen.has(u.id)) {
+              seen.add(u.id);
+              teamMembersData.push({
+                user_id: u.id,
+                full_name: u?.profile?.full_name || u?.full_name || null,
+                email: u?.email
+              });
+            }
+          });
         }
+        if (companyIds.length > 0) {
+          for (const companyId of companyIds) {
+            const employees = await apiClient.get<any[]>('/scheduler/employees/', { company: companyId, status: 'active' });
+            const list = Array.isArray(employees) ? employees : [];
+            list.filter(emp => emp?.user || emp?.user_id).forEach((emp: any) => {
+              const uid = emp.user || emp.user_id;
+              if (uid && !seen.has(uid)) {
+                seen.add(uid);
+                teamMembersData.push({
+                  user_id: uid,
+                  full_name: `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || null,
+                  email: emp?.email
+                });
+              }
+            });
+          }
+        }
+        setTeamMembers(teamMembersData);
       } else if (userRole === 'manager') {
         const companies = await apiClient.get<any[]>('/scheduler/companies/', { company_manager: user?.id });
         const companiesList = Array.isArray(companies) ? companies : [];

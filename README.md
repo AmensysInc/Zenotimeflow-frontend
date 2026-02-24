@@ -36,6 +36,18 @@ npm i
 npm run dev
 ```
 
+## Mobile app (React Native / Expo)
+
+The **mobile/** folder is the Zeno Time Flow native app (clock-in, dashboard, calendar, tasks, focus, habits, profile). Same backend as the web.
+
+```sh
+cd mobile
+npm install
+npx expo start
+```
+
+See **mobile/README.md** for API URL setup and features.
+
 **Edit a file directly in GitHub**
 
 - Navigate to the desired file(s).
