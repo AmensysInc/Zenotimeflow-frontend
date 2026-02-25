@@ -79,7 +79,7 @@ This project now uses a Django backend instead of Supabase. See the `zeno-time-b
 2. Add your API URL:
 
 ```env
-VITE_API_URL=http://localhost:8000/api
+VITE_API_URL=http://localhost:8085/api
 ```
 
 **Note:** The Supabase integration has been removed. The frontend now uses the Django REST API backend.

@@ -4,7 +4,7 @@ If login fails with "Invalid email or password", the user may not exist. Create 
 
 ## Option 1: Try the script (uses register API)
 
-With the backend running on port 8000:
+With the backend running on port 8085:
 
 ```bash
 npm run create-superadmin
@@ -48,7 +48,7 @@ If the API returns 401/403 or 500, use Option 2.
    # If you have a separate role (e.g. UserRole), assign super_admin to this user via your backend's role API or admin.
    ```
 
-5. Restart the backend if needed, then sign in at http://localhost:8080/auth with the same email and password.
+5. Restart the backend if needed, then sign in at http://localhost:6173/auth with the same email and password.
 
 ## Check if user exists
 

@@ -220,7 +220,7 @@ export const TaskNotes = ({ taskId, taskTitle, assignedUsers, isAdmin, currentUs
         formData.append('task_id', taskId);
         
         try {
-          const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/tasks/attachments/`, {
+          const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8085/api'}/tasks/attachments/`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${apiClient.getToken()}`

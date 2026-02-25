@@ -4,7 +4,7 @@
  * Usage: node scripts/create-superadmin.mjs [email] [password]
  * Default: rama.k@amensys.com / Temp@12345
  */
-const API_BASE = process.env.VITE_API_URL || process.env.API_URL || "http://localhost:8000/api";
+const API_BASE = process.env.VITE_API_URL || process.env.API_URL || "http://localhost:8085/api";
 const email = process.argv[2] || "rama.k@amensys.com";
 const password = process.argv[3] || "Temp@12345";
 const fullName = process.argv[4] || "Super Admin";
@@ -53,7 +53,7 @@ async function createSuperAdmin() {
     const data = await r.json().catch(() => ({}));
 
     if (r.ok) {
-      console.log("Super admin created successfully. You can now sign in at http://localhost:8080/auth");
+      console.log("Super admin created successfully. You can now sign in at http://localhost:6173/auth");
       return;
     }
 
@@ -88,7 +88,7 @@ async function createSuperAdmin() {
 
     console.error("Unexpected response:", r.status, data);
   } catch (err) {
-    console.error("Request failed (is the backend running on port 8000?):", err.message);
+    console.error("Request failed (is the backend running on port 8085?):", err.message);
     console.log("");
     console.log("Create the user in Django:");
     console.log("  cd path/to/zeno_time_flow_backend");

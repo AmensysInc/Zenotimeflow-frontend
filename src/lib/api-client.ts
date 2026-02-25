@@ -1,11 +1,11 @@
 /**
  * Django API Client – Zeno-time-flow
  * Handles auth (login/logout/getCurrentUser), token storage, and authenticated requests.
- * When served from 8080 we use same-origin /api so the dev proxy forwards to the backend (no CORS, single origin).
+ * When served from 6173 we use same-origin /api so the dev proxy forwards to the backend (no CORS, single origin).
  */
 function getApiUrl(): string {
-  if (typeof window !== "undefined" && window.location?.port === "8080") return "/api";
-  return import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+  if (typeof window !== "undefined" && window.location?.port === "6173") return "/api";
+  return import.meta.env.VITE_API_URL || "http://localhost:8085/api";
 }
 const API_URL = getApiUrl();
 

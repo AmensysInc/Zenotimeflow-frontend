@@ -30,14 +30,14 @@ So that **Clock In** opens the **React Native** flow (email + PIN → employee s
 
 1. **Terminal 1 – main app**
    ```bash
-   npx vite --port 8080
+   npx vite --port 6173
    ```
 2. **Terminal 2 – Expo (React Native web)**
    ```bash
    cd mobile && npx expo start --web --port 8081
    ```
 
-Then open **http://localhost:8080** and click **Clock In**. You use only 8080: the Clock In page and login stay on 8080/clock (no separate 8081 tab). Vite proxies `/clock`, `/_expo`, and `/index.bundle` to Expo on 8081 in the background. After sign-in you see the employee Clock In/Out screens on the same screen.
+Then open **http://localhost:6173** and click **Clock In**. You use only 6173: the Clock In page and login stay on 6173/clock (no separate 8081 tab). Vite proxies `/clock`, `/_expo`, and `/index.bundle` to Expo on 8081 in the background. After sign-in you see the employee Clock In/Out screens on the same screen.
 
 **If you see raw JSON (Expo manifest) instead of the Clock In screen:** the app on port 8081 must be **this project’s** mobile app. Stop any other Expo app (e.g. another project like Twilio) that might be using 8081, then from **zeno-time-flow** run: `cd mobile && npx expo start --web --port 8081`.
 

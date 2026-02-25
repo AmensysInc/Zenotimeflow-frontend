@@ -110,7 +110,7 @@ export async function apiRequest<T = any>(
       msg.toLowerCase().includes('failed to fetch')
     ) {
       throw new Error(
-        `Can't reach server. Ensure backend is running, device is on same WiFi, and mobile/.env has EXPO_PUBLIC_API_URL=http://YOUR_IP:8000/api`
+        `Can't reach server. Ensure backend is running, device is on same WiFi, and mobile/.env has EXPO_PUBLIC_API_URL=http://YOUR_IP:8085/api`
       );
     }
     throw e;

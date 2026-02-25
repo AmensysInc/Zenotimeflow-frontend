@@ -19,11 +19,11 @@ Then press `a` for Android or `i` for iOS simulator, or scan the QR code with Ex
 
 ## API URL
 
-The app uses `http://localhost:8000/api` by default. On a physical device, use your machine’s IP so the phone can reach the backend:
+The app uses `http://localhost:8085/api` by default. On a physical device, use your machine’s IP so the phone can reach the backend:
 
 1. Create `mobile/.env` (or set in app.json extra):
    ```
-   EXPO_PUBLIC_API_URL=http://192.168.1.XXX:8000/api
+   EXPO_PUBLIC_API_URL=http://192.168.1.XXX:8085/api
    ```
 2. Or edit `mobile/src/api/config.ts` and set `API_BASE_URL` to your backend URL.
 

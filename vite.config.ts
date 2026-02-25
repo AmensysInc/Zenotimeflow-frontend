@@ -8,12 +8,12 @@ import { clockProxyPlugin } from "./vite-plugin-clock-proxy";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
-    // Proxy /api to Django backend.
-    // Proxy /clock and all Expo web assets to Expo (port 8081) so Clock In works from 8080 only.
+    port: 6173,
+    // Proxy /api to Django backend (port 8085).
+    // Proxy /clock and all Expo web assets to Expo (port 8081) so Clock In works from 6173 only.
     proxy: {
       "/api": {
-        target: "http://localhost:8000",
+        target: "http://localhost:8085",
         changeOrigin: true,
       },
       "/_expo": {
