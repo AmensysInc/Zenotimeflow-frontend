@@ -18,6 +18,11 @@
     "scheme": "zeno-time-flow",
     "experiments": {
       "baseUrl": "/clock"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "publicPath": "/clock/"
     }
   }
 }
