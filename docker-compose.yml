@@ -1,0 +1,86 @@
+# Zeno Time Flow - Docker Compose for Linux VPS
+# Run from zeno-time-flow directory. Ensure zeno-time-backend is at ../zeno-time-backend
+# Usage: cp .env.docker.example .env && docker compose up -d
+
+services:
+  backend:
+    build:
+      context: ../zeno-time-backend
+      dockerfile: Dockerfile
+    container_name: zeno-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Allow frontend container and host
+      ALLOWED_HOSTS: "*"
+      CORS_ALLOWED_ORIGINS: "http://localhost,http://127.0.0.1,http://frontend"
+    volumes:
+      - backend_static:/app/staticfiles
+      - backend_media:/app/media
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - zeno-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+    container_name: zeno-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - zeno-net
+
+  mysql:
+    image: mysql:8.0
+    container_name: zeno-mysql
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${DB_NAME:-zenotimeflow_db}
+      MYSQL_USER: ${DB_USER:-zenotimeflow_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "sh", "-c", "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - zeno-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: zeno-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - zeno-net
+
+volumes:
+  mysql_data:
+  redis_data:
+  backend_static:
+  backend_media:
+
+networks:
+  zeno-net:
+    driver: bridge

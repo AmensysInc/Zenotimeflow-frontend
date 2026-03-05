@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import apiClient from "@/lib/api-client";
 import type { UserRole } from "@/types/auth";
+import { getPrimaryRole } from "@/types/auth";
 
 export type { UserRole };
 
@@ -13,58 +14,63 @@ export type { UserRole };
  * 4. Employee - Own profile and shifts
  */
 export const useUserRole = () => {
-  const { user } = useAuth();
-  const [role, setRole] = useState<UserRole | null>(null);
+  const { user, role: authRole } = useAuth();
+  const [role, setRole] = useState<UserRole | null>(authRole ?? null);
   const [allRoles, setAllRoles] = useState<UserRole[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchUserRole = async () => {
+  useEffect(() => {
     if (!user) {
+      setRole(null);
+      setAllRoles([]);
       setIsLoading(false);
       return;
     }
-
-    try {
-      const userData = await apiClient.getCurrentUser() as any;
-      
-      // Check if user has roles in the response
-      if (userData?.roles && userData.roles.length > 0) {
-        const roles = userData.roles.map((r: any) => (r.role ?? r.name) as UserRole);
-        setAllRoles(roles);
-        
-        // Determine primary role based on hierarchy priority
-        if (roles.includes('super_admin')) {
-          setRole('super_admin');
-        } else if (roles.includes('operations_manager')) {
-          setRole('operations_manager'); // Organization Manager
-        } else if (roles.includes('manager')) {
-          setRole('manager'); // Company Manager
-        } else if (roles.includes('admin')) {
-          setRole('admin');
-        } else if (roles.includes('employee')) {
-          setRole('employee');
-        } else if (roles.includes('house_keeping')) {
-          setRole('house_keeping');
-        } else if (roles.includes('maintenance')) {
-          setRole('maintenance');
+    // Use role from auth context when available to avoid duplicate getCurrentUser
+    const rolesFromUser = user?.roles;
+    if (rolesFromUser && Array.isArray(rolesFromUser) && rolesFromUser.length > 0) {
+      const roles = rolesFromUser.map((r: { role?: string; name?: string }) => (r.role ?? r.name) as UserRole);
+      setAllRoles(roles);
+      setRole(authRole ?? getPrimaryRole(rolesFromUser));
+      setIsLoading(false);
+      return;
+    }
+    if (authRole != null) {
+      setRole(authRole);
+      setAllRoles([authRole]);
+      setIsLoading(false);
+      return;
+    }
+    // No roles in user and no authRole: fetch once to get roles
+    const fetchUserRole = async () => {
+      try {
+        const userData = (await apiClient.getCurrentUser()) as { roles?: { role?: string; name?: string }[] };
+        if (userData?.roles?.length) {
+          const roles = userData.roles.map((r) => (r.role ?? r.name) as UserRole);
+          setAllRoles(roles);
+          setRole(
+            roles.includes('super_admin') ? 'super_admin'
+            : roles.includes('operations_manager') ? 'operations_manager'
+            : roles.includes('manager') ? 'manager'
+            : roles.includes('admin') ? 'admin'
+            : roles.includes('employee') ? 'employee'
+            : roles.includes('house_keeping') ? 'house_keeping'
+            : roles.includes('maintenance') ? 'maintenance'
+            : 'user'
+          );
         } else {
           setRole('user');
+          setAllRoles(['user']);
         }
-      } else {
-        setRole('user');
-        setAllRoles(['user']);
+      } catch (error) {
+        console.error('Error in fetchUserRole:', error);
+        setRole(null);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Error in fetchUserRole:', error);
-      setRole(null);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
+    };
     fetchUserRole();
-  }, [user]);
+  }, [user?.id, authRole]);
 
   // Super Admin, Organization Manager (operations_manager), and Company Manager (manager) have admin privileges
   const isAdmin = role === 'admin' || role === 'super_admin' || role === 'operations_manager' || role === 'manager';

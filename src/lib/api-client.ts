@@ -8,6 +8,7 @@ function getApiUrl(): string {
   return import.meta.env.VITE_API_URL || "http://localhost:8085/api";
 }
 const API_URL = getApiUrl();
+const API_TIMEOUT_MS = 30000; // 30s - avoid hanging requests in production
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, any>;
@@ -90,37 +91,53 @@ class ApiClient {
       (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
     }
 
-    const response = await fetch(url, { ...fetchOptions, headers });
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timeoutId = controller
+      ? setTimeout(() => controller.abort(), API_TIMEOUT_MS)
+      : null;
+    try {
+      const response = await fetch(url, {
+        ...fetchOptions,
+        headers,
+        signal: fetchOptions.signal ?? controller?.signal,
+      });
+      if (timeoutId) clearTimeout(timeoutId);
 
-    // 401: clear token so auth context will set user to null and redirect to login
-    if (response.status === 401) {
-      this.setToken(null);
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("refresh_token");
+      // 401: clear token so auth context will set user to null and redirect to login
+      if (response.status === 401) {
+        this.setToken(null);
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("refresh_token");
+        }
+        const err = await response.json().catch(() => ({}));
+        throw new Error((err as any).detail || err?.message || "Unauthorized");
       }
-      const err = await response.json().catch(() => ({}));
-      throw new Error((err as any).detail || err?.message || "Unauthorized");
-    }
 
-    // 403: Forbidden - user lacks permission (keep token, surface message)
-    if (response.status === 403) {
-      const err = await response.json().catch(() => ({}));
-      const message = (err as any)?.detail || (err as any)?.message || "You don't have permission to perform this action.";
-      throw new Error(message);
-    }
+      // 403: Forbidden - user lacks permission (keep token, surface message)
+      if (response.status === 403) {
+        const err = await response.json().catch(() => ({}));
+        const message = (err as any)?.detail || (err as any)?.message || "You don't have permission to perform this action.";
+        throw new Error(message);
+      }
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({})) as Record<string, unknown>;
-      // Django REST: detail (string or array), or field errors like { email: ["..."] }
-      const message = extractErrorMessage(err);
-      throw new Error(message || `HTTP ${response.status}`);
-    }
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as Record<string, unknown>;
+        const message = extractErrorMessage(err) || `HTTP ${response.status}`;
+        throw new Error(message);
+      }
 
-    const contentType = response.headers.get("content-type");
-    if (contentType?.includes("application/json")) {
-      return response.json() as Promise<T>;
+      const contentType = response.headers.get("content-type");
+      if (contentType?.includes("application/json")) {
+        return response.json() as Promise<T>;
+      }
+      return {} as T;
+    } catch (e) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (e instanceof Error && e.name === "AbortError") {
+        throw new Error("Request timed out. Please try again.");
+      }
+      throw e;
     }
-    return {} as T;
   }
 
   async get<T>(endpoint: string, params?: Record<string, any>): Promise<T> {

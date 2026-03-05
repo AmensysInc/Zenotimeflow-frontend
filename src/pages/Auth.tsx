@@ -18,7 +18,7 @@ const Auth = () => {
   const [searchParams] = useSearchParams();
   const redirectTo = searchParams.get("redirect");
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { user, setSessionFromLogin } = useAuth();
 
   useEffect(() => {
     if (user) {
@@ -40,9 +40,18 @@ const Auth = () => {
     setIsLoading(true);
 
     try {
-      await apiClient.login(trimmedUsername, password);
-      // Redirect to intended page (e.g. /clock-in) or dashboard
-      window.location.href = redirectTo && redirectTo.startsWith("/") ? redirectTo : "/dashboard";
+      const response = await apiClient.login(trimmedUsername, password);
+      const userData = response?.user;
+      const access = response?.access ?? response?.access_token;
+      if (userData && access) {
+        setSessionFromLogin({
+          user: userData,
+          access,
+          refresh: response?.refresh ?? response?.refresh_token,
+        });
+      }
+      const target = redirectTo && redirectTo.startsWith("/") ? redirectTo : "/dashboard";
+      navigate(target, { replace: true });
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "Invalid username or password. Please try again.";

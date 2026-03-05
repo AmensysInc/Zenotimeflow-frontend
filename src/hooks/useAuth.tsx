@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, useMemo, useCallback } from "react";
 import apiClient from "@/lib/api-client";
 import { type UserRole, getPrimaryRole } from "@/types/auth";
 
@@ -25,6 +25,8 @@ interface AuthContextType {
   session: { access_token: string } | null;
   isLoading: boolean;
   signOut: () => Promise<void>;
+  /** Set user/role/session from login response to avoid full reload and duplicate getCurrentUser. */
+  setSessionFromLogin: (payload: { user: User; access: string; refresh?: string }) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -78,7 +80,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     initializeAuth();
   }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     try {
       setUser(null);
       setRole(null);
@@ -91,10 +93,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setSession(null);
     }
     window.location.href = "/";
-  };
+  }, []);
+
+  const setSessionFromLogin = useCallback((payload: { user: User; access: string; refresh?: string }) => {
+    setUser(payload.user);
+    setRole(getPrimaryRole(payload.user?.roles));
+    setSession({ access_token: payload.access });
+  }, []);
+
+  const value = useMemo(
+    () => ({ user, role, session, isLoading, signOut, setSessionFromLogin }),
+    [user, role, session, isLoading, signOut, setSessionFromLogin]
+  );
 
   return (
-    <AuthContext.Provider value={{ user, role, session, isLoading, signOut }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
