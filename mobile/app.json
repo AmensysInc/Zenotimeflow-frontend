@@ -16,12 +16,9 @@
     },
     "userInterfaceStyle": "automatic",
     "scheme": "zeno-time-flow",
-    "experiments": {
-      "baseUrl": "/clock"
-    },
     "web": {
       "bundler": "metro",
-      "output": "single",
+      "output": "static",
       "publicPath": "/clock/"
     }
   }
