@@ -88,8 +88,8 @@ export default function CreateOrganizationModal({ open, onOpenChange, onSuccess 
         organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
       });
 
+      await (onSuccess?.() ?? Promise.resolve());
       onOpenChange(false);
-      onSuccess?.();
       setFormData({
         name: "",
         color: "#6366f1",

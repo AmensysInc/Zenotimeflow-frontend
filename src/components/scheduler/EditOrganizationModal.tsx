@@ -105,7 +105,7 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
         organization_manager_id: (formData.organization_manager_id && formData.organization_manager_id !== "none") ? formData.organization_manager_id : null
       });
 
-      onSuccess?.();
+      await (onSuccess?.() ?? Promise.resolve());
       onOpenChange(false);
       toast.success("Organization updated successfully!");
     } catch (error: any) {
@@ -124,7 +124,7 @@ export default function EditOrganizationModal({ open, onOpenChange, organization
     try {
       await apiClient.delete(`/scheduler/organizations/${organization.id}/`);
 
-      onSuccess?.();
+      await (onSuccess?.() ?? Promise.resolve());
       onOpenChange(false);
       toast.success("Organization deleted successfully!");
     } catch (error) {

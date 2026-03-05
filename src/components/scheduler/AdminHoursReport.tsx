@@ -14,9 +14,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-// Supabase removed - using Django API
 import { format, parseISO, startOfWeek, endOfWeek, startOfMonth, endOfMonth, subMonths } from "date-fns";
 import { toast } from "sonner";
+import apiClient from "@/lib/api-client";
+
+function ensureArray<T>(data: T | T[] | { results?: T[] } | null | undefined): T[] {
+  if (data == null) return [];
+  if (Array.isArray(data)) return data;
+  if (typeof data === "object" && Array.isArray((data as { results?: T[] }).results))
+    return (data as { results: T[] }).results;
+  return [];
+}
 
 interface AdminHoursReportProps {
   companyId: string;
@@ -37,10 +45,8 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
   useEffect(() => {
     const fetchDepartments = async () => {
       if (!companyId) return;
-      const departments = await apiClient.get<any[]>('/scheduler/departments/', {
-        company: companyId
-      });
-      setDepartments(departments);
+      const data = await apiClient.get<any>('/scheduler/departments/', { company: companyId });
+      setDepartments(ensureArray(data));
     };
     fetchDepartments();
   }, [companyId]);
@@ -49,11 +55,11 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
   useEffect(() => {
     const fetchEmployees = async () => {
       if (!companyId) return;
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
+      const data = await apiClient.get<any>('/scheduler/employees/', {
         company: companyId,
         status: 'active'
       });
-      setEmployees(employees);
+      setEmployees(ensureArray(data));
     };
     fetchEmployees();
   }, [companyId]);
@@ -63,61 +69,77 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
     const fetchEntries = async () => {
       if (!companyId) return;
       setLoading(true);
+      try {
+        let start: Date;
+        let end: Date;
+        const now = new Date();
 
-      let start: Date;
-      let end: Date;
-      const now = new Date();
+        switch (dateRange) {
+          case 'week':
+            start = startOfWeek(now, { weekStartsOn: 1 });
+            end = endOfWeek(now, { weekStartsOn: 1 });
+            break;
+          case 'month':
+            start = startOfMonth(now);
+            end = endOfMonth(now);
+            break;
+          case 'lastMonth':
+            const lastMonth = subMonths(now, 1);
+            start = startOfMonth(lastMonth);
+            end = endOfMonth(lastMonth);
+            break;
+          case 'custom':
+            start = startDate ? new Date(startDate) : startOfMonth(now);
+            end = endDate ? new Date(endDate) : endOfMonth(now);
+            break;
+          default:
+            start = startOfWeek(now, { weekStartsOn: 1 });
+            end = endOfWeek(now, { weekStartsOn: 1 });
+        }
 
-      switch (dateRange) {
-        case 'week':
-          start = startOfWeek(now, { weekStartsOn: 1 });
-          end = endOfWeek(now, { weekStartsOn: 1 });
-          break;
-        case 'month':
-          start = startOfMonth(now);
-          end = endOfMonth(now);
-          break;
-        case 'lastMonth':
-          const lastMonth = subMonths(now, 1);
-          start = startOfMonth(lastMonth);
-          end = endOfMonth(lastMonth);
-          break;
-        case 'custom':
-          start = startDate ? new Date(startDate) : startOfMonth(now);
-          end = endDate ? new Date(endDate) : endOfMonth(now);
-          break;
-        default:
-          start = startOfWeek(now, { weekStartsOn: 1 });
-          end = endOfWeek(now, { weekStartsOn: 1 });
-      }
+        const rawEntries = await apiClient.get<any>('/scheduler/time-clock/', {
+          start_date: start.toISOString(),
+          end_date: end.toISOString()
+        });
+        let entries = ensureArray(rawEntries);
 
-      let entries = await apiClient.get<any[]>('/scheduler/time-clock/', {
-        clock_in__gte: start.toISOString(),
-        clock_in__lte: end.toISOString()
-      });
-      
-      // Filter by company and department
-      const employees = await apiClient.get<any[]>('/scheduler/employees/', {
-        company: companyId
-      });
-      const employeeIds = employees.map((e: any) => e.id);
-      entries = entries.filter((e: any) => employeeIds.includes(e.employee));
-      
-      if (selectedDepartment !== 'all') {
-        const deptEmployeeIds = employees
-          .filter((e: any) => e.department === selectedDepartment)
-          .map((e: any) => e.id);
-        entries = entries.filter((e: any) => deptEmployeeIds.includes(e.employee));
+        const companyEmployees = ensureArray(
+          await apiClient.get<any>('/scheduler/employees/', { company: companyId })
+        );
+        const employeeMap: Record<string, any> = {};
+        companyEmployees.forEach((e: any) => {
+          employeeMap[e.id] = e;
+        });
+        const employeeIds = companyEmployees.map((e: any) => e.id);
+        entries = entries.filter((e: any) => employeeIds.includes(e.employee));
+
+        if (selectedDepartment !== 'all') {
+          const deptEmployeeIds = companyEmployees
+            .filter((e: any) => (e.department_id ?? e.department) === selectedDepartment)
+            .map((e: any) => e.id);
+          entries = entries.filter((e: any) => deptEmployeeIds.includes(e.employee));
+        }
+
+        if (selectedEmployee !== 'all') {
+          entries = entries.filter((e: any) => e.employee === selectedEmployee);
+        }
+
+        entries = entries.map((e: any) => ({
+          ...e,
+          employee_id: e.employee_id ?? e.employee,
+          employees: employeeMap[e.employee] ?? null
+        }));
+
+        setEntries(entries.sort((a: any, b: any) =>
+          new Date(b.clock_in || 0).getTime() - new Date(a.clock_in || 0).getTime()
+        ));
+      } catch (err: any) {
+        console.error('Failed to load hours report:', err);
+        toast.error(err?.message || 'Failed to load time entries');
+        setEntries([]);
+      } finally {
+        setLoading(false);
       }
-      
-      if (selectedEmployee !== 'all') {
-        entries = entries.filter((e: any) => e.employee === selectedEmployee);
-      }
-      
-      setEntries(entries.sort((a: any, b: any) => 
-        new Date(b.clock_in || 0).getTime() - new Date(a.clock_in || 0).getTime()
-      ));
-      setLoading(false);
     };
 
     fetchEntries();
@@ -137,20 +159,24 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
     }> = {};
 
     entries.forEach(entry => {
-      const empId = entry.employee_id;
+      const empId = entry.employee_id ?? entry.employee;
       const emp = entry.employees;
-      
+      const name = emp
+        ? `${emp.first_name || ''} ${emp.last_name || ''}`.trim()
+        : (entry.employee_name || 'Unknown');
+
       if (!summary[empId]) {
-        const dept = departments.find(d => d.id === emp?.department_id);
+        const deptId = emp?.department_id ?? emp?.department;
+        const dept = departments.find(d => d.id === deptId);
         summary[empId] = {
           employeeId: empId,
-          name: `${emp?.first_name || ''} ${emp?.last_name || ''}`.trim(),
-          position: emp?.position || 'N/A',
-          department: dept?.name || 'N/A',
+          name: name || 'Unknown',
+          position: emp?.position ?? 'N/A',
+          department: dept?.name ?? 'N/A',
           totalHours: 0,
           overtimeHours: 0,
           entries: 0,
-          hourlyRate: Number(emp?.hourly_rate || 0),
+          hourlyRate: Number(emp?.hourly_rate ?? 0),
         };
       }
 
@@ -167,41 +193,60 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
   const totalOvertime = summaryData.reduce((sum, s) => sum + s.overtimeHours, 0);
   const totalCost = summaryData.reduce((sum, s) => sum + (s.totalHours * s.hourlyRate), 0);
 
+  const escapeCsv = (val: string | number): string => {
+    const s = String(val ?? '');
+    if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s ? `"${s}"` : '""';
+  };
+
+  const formatSafeDate = (iso: string | null, fmt: string): string => {
+    if (!iso) return '-';
+    try {
+      const d = typeof iso === 'string' && iso.includes('Z') ? parseISO(iso) : new Date(iso);
+      if (isNaN(d.getTime())) return '-';
+      return format(d, fmt);
+    } catch {
+      return '-';
+    }
+  };
+
   // Export to Excel (CSV)
   const exportToExcel = () => {
     let csvContent = 'Employee,Position,Department,Total Hours,Overtime Hours,Hourly Rate,Total Cost,Entries\n';
-    
+
     summaryData.forEach(row => {
       const th = Number(row.totalHours) || 0;
       const ot = Number(row.overtimeHours) || 0;
       const rate = Number(row.hourlyRate) || 0;
       const cost = th * rate;
-      csvContent += `"${row.name}","${row.position}","${row.department}",${th.toFixed(2)},${ot.toFixed(2)},${rate.toFixed(2)},${cost.toFixed(2)},${row.entries}\n`;
+      csvContent += `${escapeCsv(row.name)},${escapeCsv(row.position)},${escapeCsv(row.department)},${th.toFixed(2)},${ot.toFixed(2)},${rate.toFixed(2)},${cost.toFixed(2)},${row.entries}\n`;
     });
-    
+
     const sumH = Number(totalHours) || 0;
     const sumO = Number(totalOvertime) || 0;
     const sumC = Number(totalCost) || 0;
     csvContent += `\nTotals,,,${sumH.toFixed(2)},${sumO.toFixed(2)},,${sumC.toFixed(2)},${entries.length}\n`;
-    
-    // Add detailed entries
+
     csvContent += '\n\nDetailed Time Entries\n';
     csvContent += 'Employee,Date,Clock In,Clock Out,Break (min),Total Hours,Overtime,Notes\n';
-    
+
     entries.forEach(entry => {
       const emp = entry.employees;
-      const date = entry.clock_in ? format(parseISO(entry.clock_in), 'yyyy-MM-dd') : '-';
-      const clockIn = entry.clock_in ? format(parseISO(entry.clock_in), 'HH:mm') : '-';
-      const clockOut = entry.clock_out ? format(parseISO(entry.clock_out), 'HH:mm') : 'Active';
-      
+      const empName = emp ? `${emp.first_name || ''} ${emp.last_name || ''}`.trim() : (entry.employee_name || '');
+      const date = formatSafeDate(entry.clock_in, 'yyyy-MM-dd');
+      const clockIn = formatSafeDate(entry.clock_in, 'HH:mm');
+      const clockOut = entry.clock_out ? formatSafeDate(entry.clock_out, 'HH:mm') : 'Active';
+
       let breakMin = 0;
       if (entry.break_start && entry.break_end) {
         breakMin = Math.round((new Date(entry.break_end).getTime() - new Date(entry.break_start).getTime()) / (1000 * 60));
       }
-      
-      csvContent += `"${emp?.first_name} ${emp?.last_name}",${date},${clockIn},${clockOut},${breakMin},${(entry.total_hours || 0).toFixed(2)},${(entry.overtime_hours || 0).toFixed(2)},"${entry.notes || ''}"\n`;
+
+      csvContent += `${escapeCsv(empName)},${date},${clockIn},${clockOut},${breakMin},${(Number(entry.total_hours) || 0).toFixed(2)},${(Number(entry.overtime_hours) || 0).toFixed(2)},${escapeCsv(entry.notes || '')}\n`;
     });
-    
+
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -211,7 +256,7 @@ export default function AdminHoursReport({ companyId }: AdminHoursReportProps) {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
-    
+
     toast.success('Report exported successfully');
   };
 

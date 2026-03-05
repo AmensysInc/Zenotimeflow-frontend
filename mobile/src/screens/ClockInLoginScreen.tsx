@@ -35,7 +35,7 @@ export default function ClockInLoginScreen({ onBack }: { onBack: () => void }) {
     const u = username.trim();
     const p = pin.trim();
     if (!u || !p) {
-      Alert.alert('Error', 'Please enter username and PIN');
+      Alert.alert('Error', 'Please enter email, username, or phone and PIN');
       return;
     }
     try {
@@ -61,7 +61,7 @@ export default function ClockInLoginScreen({ onBack }: { onBack: () => void }) {
 
         <TextInput
           style={styles.input}
-          placeholder="Username"
+          placeholder="Email, username, or 10-digit phone"
           placeholderTextColor="#94a3b8"
           value={username}
           onChangeText={setUsername}

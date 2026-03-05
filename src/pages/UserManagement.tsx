@@ -40,6 +40,7 @@ interface UserProfile {
   username?: string;
   full_name: string;
   email: string;
+  phone?: string;
   created_at: string;
   status: string;
   role: string;
@@ -63,6 +64,7 @@ export default function UserManagement() {
     username: "",
     full_name: "",
     password: "",
+    phone: "",
     employee_pin: "",
     role: "employee" as "employee" | "house_keeping" | "maintenance" | "manager" | "operations_manager" | "super_admin",
     manager_id: "none",
@@ -254,6 +256,7 @@ export default function UserManagement() {
             username: u.username ?? profile.username ?? '',
             email: u.email || profile.email || '',
             full_name: profile.full_name || u.full_name || '',
+            phone: profile.mobile_number ?? '',
             created_at: profile.created_at || u.created_at || new Date().toISOString(),
             status: profile.status || u.status || 'active',
             manager_id: profile.manager_id || u.manager_id,
@@ -595,6 +598,9 @@ export default function UserManagement() {
           full_name: fullName,
           role: backendRole,
         };
+        if (newUser.phone?.trim()) {
+          usersPayload.mobile_number = newUser.phone.replace(/\D/g, '').slice(-10) || newUser.phone.trim();
+        }
         if (newUser.role === "operations_manager" && newUser.organization_id) {
           usersPayload.organization_id = newUser.organization_id;
         }
@@ -652,9 +658,10 @@ export default function UserManagement() {
         email: "",
         username: "",
         full_name: "",
-        role: "employee",
         password: "",
+        phone: "",
         employee_pin: "",
+        role: "employee",
         manager_id: "none",
         organization_id: "",
         company_id: "",
@@ -696,10 +703,15 @@ export default function UserManagement() {
         }
       }
       // Update profile
-      await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, { 
+      const profilePayload: { full_name: string; email: string; mobile_number?: string } = {
         full_name: editingUser.full_name,
         email: editingUser.email
-      });
+      };
+      if (editingUser.phone !== undefined) {
+        const digits = (editingUser.phone ?? '').replace(/\D/g, '');
+        profilePayload.mobile_number = digits.slice(-10) || (editingUser.phone ?? '').trim() || '';
+      }
+      await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, profilePayload);
 
       // Update user role
       await updateUserRole(editingUser.user_id, editingUser.role as any);
@@ -1380,6 +1392,22 @@ export default function UserManagement() {
                     />
                   </div>
                   <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="phone" className="text-right">
+                      Phone
+                    </Label>
+                    <Input
+                      id="phone"
+                      type="tel"
+                      value={newUser.phone}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                        setNewUser({ ...newUser, phone: val });
+                      }}
+                      className="col-span-3"
+                      placeholder="10-digit phone (no country code)"
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="password" className="text-right">
                       Password
                     </Label>
@@ -1899,6 +1927,22 @@ export default function UserManagement() {
                   value={editingUser.full_name || ""}
                   onChange={(e) => setEditingUser({ ...editingUser, full_name: e.target.value })}
                   className="col-span-3"
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="edit_phone" className="text-right">
+                  Phone
+                </Label>
+                <Input
+                  id="edit_phone"
+                  type="tel"
+                  value={editingUser.phone ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                    setEditingUser({ ...editingUser, phone: val });
+                  }}
+                  className="col-span-3"
+                  placeholder="10-digit phone (no country code)"
                 />
               </div>
               <div className="grid grid-cols-4 items-center gap-4">

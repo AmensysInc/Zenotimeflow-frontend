@@ -38,6 +38,7 @@ interface UserProfile {
   user_id: string;
   full_name: string;
   email: string;
+  phone?: string;
   created_at: string;
   status: string;
   role: string;
@@ -53,6 +54,7 @@ export default function SchedulerUserManagement() {
   const [newUser, setNewUser] = useState({
     email: "",
     full_name: "",
+    phone: "",
     password: "",
     role: "employee" as "employee" | "house_keeping" | "maintenance" | "manager" | "operations_manager" | "super_admin"
   });
@@ -117,7 +119,8 @@ export default function SchedulerUserManagement() {
       const profiles = allUsers.map((u: any) => ({
         ...u.profile,
         user_id: u.id,
-        email: u.email
+        email: u.email,
+        phone: u.profile?.mobile_number ?? ''
       })).sort((a: any, b: any) => 
         new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
       );
@@ -236,13 +239,17 @@ export default function SchedulerUserManagement() {
       // Create user via Django API
       let data;
       try {
-        data = await apiClient.post('/auth/register/', {
+        const registerPayload: Record<string, any> = {
           email: newUser.email,
           full_name: newUser.full_name,
           role: newUser.role,
           password: newUser.password,
           app_type: 'scheduler'
-        });
+        };
+        if (newUser.phone?.trim()) {
+          registerPayload.mobile_number = newUser.phone.replace(/\D/g, '').slice(-10) || newUser.phone.trim();
+        }
+        data = await apiClient.post('/auth/register/', registerPayload);
       } catch (error: any) {
         console.error('User creation error:', error);
         let errorMessage = "Failed to create user. Please try again.";
@@ -265,7 +272,7 @@ export default function SchedulerUserManagement() {
       });
 
       // Clear the form and close dialog
-      setNewUser({ email: "", full_name: "", role: "employee", password: "" });
+      setNewUser({ email: "", full_name: "", phone: "", role: "employee", password: "" });
       setIsDialogOpen(false);
       
       // Reload users to show the new user
@@ -295,10 +302,15 @@ export default function SchedulerUserManagement() {
     if (!editingUser) return;
 
     try {
-      await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, { 
+      const profilePayload: { full_name: string; email: string; mobile_number?: string } = {
         full_name: editingUser.full_name,
         email: editingUser.email
-      });
+      };
+      if (editingUser.phone !== undefined) {
+        const digits = (editingUser.phone ?? '').replace(/\D/g, '');
+        profilePayload.mobile_number = digits.slice(-10) || (editingUser.phone ?? '').trim() || '';
+      }
+      await apiClient.patch(`/auth/profiles/${editingUser.user_id}/`, profilePayload);
 
       toast({
         title: "Success",
@@ -556,6 +568,22 @@ export default function SchedulerUserManagement() {
                     />
                   </div>
                   <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="phone" className="text-right">
+                      Phone
+                    </Label>
+                    <Input
+                      id="phone"
+                      type="tel"
+                      value={newUser.phone}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                        setNewUser({ ...newUser, phone: val });
+                      }}
+                      className="col-span-3"
+                      placeholder="10-digit phone (no country code)"
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="password" className="text-right">
                       Password
                     </Label>
@@ -737,6 +765,22 @@ export default function SchedulerUserManagement() {
                   value={editingUser.full_name}
                   onChange={(e) => setEditingUser({ ...editingUser, full_name: e.target.value })}
                   className="col-span-3"
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="edit-phone" className="text-right">
+                  Phone
+                </Label>
+                <Input
+                  id="edit-phone"
+                  type="tel"
+                  value={editingUser.phone ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                    setEditingUser({ ...editingUser, phone: val });
+                  }}
+                  className="col-span-3"
+                  placeholder="10-digit phone (no country code)"
                 />
               </div>
             </div>

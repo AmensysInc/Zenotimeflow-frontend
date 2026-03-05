@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Clock, Play, Square, Calendar, Download, Filter, Users, MapPin, Coffee, FileSpreadsheet } from "lucide-react";
+import { Clock, Play, Square, Calendar, Download, Filter, Users, MapPin, Coffee, FileSpreadsheet, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useUserRole } from "@/hooks/useUserRole";
 import AdminHoursReport from "@/components/scheduler/AdminHoursReport";
 import AdminTasksOverview from "@/components/scheduler/AdminTasksOverview";
+import EditTimeEntryModal from "@/components/scheduler/EditTimeEntryModal";
 
 export default function SchedulerTimeClock() {
   const { user } = useAuth();
@@ -35,6 +36,8 @@ export default function SchedulerTimeClock() {
   const [companies, setCompanies] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [clockingIn, setClockingIn] = useState<string | null>(null);
+  const [editEntry, setEditEntry] = useState<any>(null);
+  const [showEditTimeModal, setShowEditTimeModal] = useState(false);
 
   useEffect(() => {
     loadCompanies();
@@ -540,6 +543,7 @@ export default function SchedulerTimeClock() {
                         <TableHead>Total Hours</TableHead>
                         <TableHead>Overtime</TableHead>
                         <TableHead>Status</TableHead>
+                        {role === 'super_admin' && <TableHead className="w-[80px]">Actions</TableHead>}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -584,11 +588,27 @@ export default function SchedulerTimeClock() {
                                 {entry.clock_out ? 'Completed' : 'Active'}
                               </Badge>
                             </TableCell>
+                            {role === 'super_admin' && (
+                              <TableCell>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0"
+                                  onClick={() => {
+                                    setEditEntry(entry);
+                                    setShowEditTimeModal(true);
+                                  }}
+                                  title="Edit clock in/out"
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                              </TableCell>
+                            )}
                           </TableRow>
                         );
                       }) : (
                         <TableRow>
-                          <TableCell colSpan={8} className="text-center py-8">
+                          <TableCell colSpan={role === 'super_admin' ? 9 : 8} className="text-center py-8">
                             <Clock className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
                             <p className="text-muted-foreground">No time entries found</p>
                           </TableCell>
@@ -610,6 +630,16 @@ export default function SchedulerTimeClock() {
           </TabsContent>
         </Tabs>
       )}
+
+      <EditTimeEntryModal
+        open={showEditTimeModal}
+        onOpenChange={(open) => {
+          setShowEditTimeModal(open);
+          if (!open) setEditEntry(null);
+        }}
+        entry={editEntry}
+        onSuccess={loadTimeClockData}
+      />
     </div>
   );
 }

@@ -80,9 +80,8 @@ export default function Companies() {
     setShowAssignModal(true);
   };
 
-  const handleRefresh = () => {
-    fetchCompanies();
-    fetchOrganizations();
+  const handleRefresh = async () => {
+    await Promise.all([fetchCompanies(), fetchOrganizations()]);
   };
 
   const loading = companiesLoading || orgsLoading || roleLoading;

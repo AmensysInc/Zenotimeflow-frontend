@@ -87,14 +87,14 @@ const Auth = () => {
           <CardContent>
             <form onSubmit={handleSignIn} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="username">Username or email</Label>
+                <Label htmlFor="username">Username, email, or phone</Label>
                 <Input
                   id="username"
                   type="text"
                   autoComplete="username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Enter your username or email"
+                  placeholder="Username, email, or 10-digit phone (no country code)"
                   required
                 />
               </div>
