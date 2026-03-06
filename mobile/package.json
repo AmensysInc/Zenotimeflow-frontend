@@ -7,7 +7,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build:web": "expo export --platform web --output-dir dist-web"
+    "build:web": "expo export --platform web --output-dir dist-web",
+    "build:web:clock": "expo export --platform web && node -e \"const fs=require('fs');const p='dist/index.html';let h=fs.readFileSync(p,'utf8');h=h.replace(/\\/_expo\\//g,'/clock/_expo/');fs.writeFileSync(p,h);\""
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
